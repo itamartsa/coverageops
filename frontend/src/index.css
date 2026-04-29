@@ -1,0 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=IBM+Plex+Sans+Hebrew:wght@300;400;500;600&display=swap');
+
+:root {
+  --bg:       #0a0e14;
+  --bg2:      #0f1520;
+  --bg3:      #151d2e;
+  --panel:    #111928;
+  --border:   #1e2d45;
+  --accent:   #00d4ff;
+  --accent2:  #00ff88;
+  --accent3:  #ff6b35;
+  --text:     #c8d8e8;
+  --text-dim: #5a7a9a;
+  --text-bright: #eaf4ff;
+  --danger:   #ff3b5c;
+  --warn:     #ffb347;
+
+  --cov-excellent: #00ff88;
+  --cov-good:      #7dff6b;
+  --cov-medium:    #ffe600;
+  --cov-weak:      #ff8c00;
+  --cov-marginal:  #ff3b5c;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* Applied to <html> during map draw — prevents text selection across the whole page */
+html.drawing, html.drawing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: crosshair !important;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans Hebrew', sans-serif;
+  direction: rtl;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Leaflet dark tiles */
+.leaflet-tile {
+  filter: brightness(0.85) saturate(0.6) hue-rotate(180deg) invert(1) sepia(0.3) hue-rotate(180deg);
+}
+.leaflet-container { background: #0a0e14 !important; }
+
+/* Reusable utility classes */
+.font-rajdhani { font-family: 'Rajdhani', sans-serif; }
+.text-accent   { color: var(--accent); }
+.text-dim      { color: var(--text-dim); }
+.text-bright   { color: var(--text-bright); }
+
+/* Animations */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes spin  { to { transform: rotate(360deg); } }
+@keyframes slideIn {
+  from { opacity:0; transform:translateY(-8px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes fadeInOut {
+  0%  { opacity:0; transform:translateX(-50%) translateY(-8px); }
+  12% { opacity:1; transform:translateX(-50%) translateY(0); }
+  80% { opacity:1; }
+  100%{ opacity:0; }
+}

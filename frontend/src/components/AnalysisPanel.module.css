@@ -1,0 +1,236 @@
+.sectionHeader {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sectionHeader::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.modeToggle {
+  display: grid; grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border); margin-bottom: 12px;
+}
+
+.modeBtn {
+  padding: 10px 6px;
+  background: none; border: none; border-right: 1px solid var(--border);
+  color: var(--text-dim); font-family: inherit;
+  font-size: 11px; letter-spacing: 1px; cursor: pointer;
+  transition: all .2s; text-align: center; line-height: 1.5;
+}
+.modeBtn:first-child { border-right: none; border-left: 1px solid var(--border); }
+.modeBtn.active { background: var(--accent); color: #000; font-weight: 600; }
+.modeBtn small  { font-size: 10px; opacity: .8; }
+
+.modeInfo {
+  background: rgba(0,212,255,0.06);
+  border: 1px solid rgba(0,212,255,0.2);
+  padding: 9px 12px; margin-bottom: 14px;
+  font-size: 11px; color: var(--text-dim); line-height: 1.6;
+}
+
+.runBtn {
+  width: 100%; padding: 11px;
+  background: var(--accent2); border: none;
+  color: #000; font-family: 'Rajdhani', sans-serif;
+  font-size: 13px; font-weight: 700; letter-spacing: 2px;
+  text-transform: uppercase; cursor: pointer; transition: all .2s;
+  margin-bottom: 8px;
+}
+.runBtn:hover:not(:disabled) { filter: brightness(1.1); box-shadow: 0 0 16px rgba(0,255,136,0.3); }
+.runBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.actionBtn {
+  width: 100%; padding: 9px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); font-family: 'Rajdhani', sans-serif;
+  font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+  text-transform: uppercase; cursor: pointer; transition: all .2s;
+  margin-bottom: 6px;
+}
+.danger { color: var(--danger); border-color: var(--danger); }
+.danger:hover { background: rgba(255,59,92,0.08); }
+
+/* Legend */
+.legend {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 12px; margin-bottom: 14px;
+}
+.legendRow {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 7px; font-size: 12px;
+}
+.legendRow:last-child { margin-bottom: 0; }
+.legendColor {
+  width: 14px; height: 14px; flex-shrink: 0; border-radius: 2px;
+}
+.legendLabel { flex: 1; color: var(--text); }
+.legendValue { color: var(--text-dim); font-size: 10px; font-family: monospace; }
+
+/* Stats */
+.statsGrid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  margin-bottom: 10px;
+}
+.statBox {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 12px; text-align: center;
+}
+.statValue {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 22px; font-weight: 700; color: var(--accent);
+}
+.statLabel {
+  font-size: 10px; color: var(--text-dim); letter-spacing: 1px; margin-top: 2px;
+}
+.duration {
+  font-size: 10px; color: var(--text-dim); text-align: center;
+  letter-spacing: 1px; margin-bottom: 8px;
+}
+
+/* Wizard Steps */
+.stepCard {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 12px; margin-bottom: 12px; border-right: 3px solid var(--border);
+  transition: all .2s;
+}
+.stepCard.completed {
+  border-right-color: var(--accent2);
+}
+.stepHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; font-weight: 700; font-size: 13px; color: var(--text);
+}
+.stepStatus { font-size: 11px; }
+.stepStatus.done { color: var(--accent2); }
+.stepStatus.pending { color: var(--text-dim); }
+
+.siteSelect {
+  width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 12px;
+  outline: none; transition: border-color .2s;
+}
+.siteSelect:focus { border-color: var(--accent); }
+
+/* Multi-site checklist */
+.siteCheckList {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 190px; overflow-y: auto;
+}
+.siteCheckItem {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px;
+  background: var(--bg); border: 1px solid var(--border);
+  cursor: pointer; font-size: 12px; color: var(--text);
+  transition: border-color .15s;
+  user-select: none;
+}
+.siteCheckItem:hover { border-color: var(--accent); }
+.siteCheckItem.checked { border-color: var(--accent2); background: rgba(0,255,136,0.05); }
+.siteCheckItem input { accent-color: var(--accent2); flex-shrink: 0; }
+.freqDot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+
+/* ── Info button (ⓘ next to section header) ───────────────────────────────── */
+.infoBtn {
+  background: none; border: none; padding: 0 2px;
+  color: var(--text-dim); font-size: 13px; cursor: pointer;
+  line-height: 1; transition: color .15s;
+  margin-right: auto; /* push to the left end of the header flex row */
+}
+.infoBtn:hover { color: var(--accent); }
+
+/* ── Info panel ──────────────────────────────────────────────────────────── */
+.infoPanel {
+  background: #0a1626;
+  border: 1px solid var(--accent);
+  padding: 14px;
+  margin-bottom: 14px;
+  direction: rtl;
+  animation: fadeIn .15s ease;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.infoPanelClose {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.infoPanelTitle {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 12px; font-weight: 700; letter-spacing: 1.5px;
+  text-transform: uppercase; color: var(--accent);
+}
+.infoPanelCloseBtn {
+  background: none; border: none; color: var(--text-dim);
+  font-size: 13px; cursor: pointer; padding: 0 2px;
+  transition: color .15s;
+}
+.infoPanelCloseBtn:hover { color: var(--danger); }
+
+.infoSection { margin-bottom: 14px; }
+.infoSection:last-child { margin-bottom: 0; }
+
+.infoSectionTitle {
+  font-size: 11px; font-weight: 700; color: var(--text);
+  margin-bottom: 7px; letter-spacing: 0.5px;
+}
+
+.infoText {
+  font-size: 11px; color: var(--text-dim); line-height: 1.65;
+}
+
+.formula {
+  display: block;
+  font-family: monospace; font-size: 11px;
+  background: rgba(0,212,255,0.08); border-right: 2px solid var(--accent);
+  padding: 5px 8px; margin: 6px 0; color: var(--accent);
+  direction: ltr; text-align: left;
+}
+
+.infoSteps { display: flex; flex-direction: column; gap: 5px; }
+.infoStep {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-dim);
+}
+.infoStepNum {
+  background: var(--accent); color: #000;
+  font-size: 10px; font-weight: 700;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+.infoLegendRow {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin-bottom: 8px;
+}
+.infoLegendRow:last-child { margin-bottom: 0; }
+.infoLegendColor {
+  width: 12px; height: 12px; border-radius: 2px;
+  flex-shrink: 0; margin-top: 2px;
+}
+.infoLegendBody { flex: 1; }
+.infoLegendLabel {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text); margin-bottom: 2px;
+}
+.infoLegendValue {
+  font-family: monospace; font-size: 10px;
+  color: var(--text-dim);
+}
+.infoLegendDesc {
+  font-size: 10px; color: var(--text-dim); line-height: 1.5;
+}
+
+/* Per-site result block */
+.siteResultBlock {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 10px; margin-bottom: 10px; border-right: 3px solid var(--accent2);
+}
+.siteResultTitle {
+  font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+  color: var(--accent2); margin-bottom: 8px; letter-spacing: 1px;
+}

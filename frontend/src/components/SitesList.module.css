@@ -1,0 +1,58 @@
+.empty {
+  text-align: center; padding: 30px 10px;
+  color: var(--text-dim); font-size: 12px; line-height: 2;
+}
+.emptyIcon { font-size: 32px; margin-bottom: 10px; opacity: .4; }
+
+.sectionHeader {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sectionHeader::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.card {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 12px; margin-bottom: 8px; cursor: pointer;
+  transition: border-color .2s; position: relative;
+}
+.card:hover  { border-color: rgba(0,212,255,0.4); }
+.card.active { border-color: var(--accent); background: rgba(0,212,255,0.05); }
+
+.freqBadge {
+  position: absolute; top: 10px; left: 10px;
+  color: #000; font-size: 9px; font-weight: 700;
+  padding: 2px 6px; letter-spacing: 1px;
+  font-family: 'Rajdhani', sans-serif;
+}
+
+.name {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 14px; font-weight: 600;
+  color: var(--text-bright); margin-bottom: 4px;
+}
+.detail { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+.notes  { font-size: 11px; color: var(--text-dim); font-style: italic; margin-top: 4px; }
+
+.deleteBtn {
+  position: absolute; bottom: 10px; left: 10px;
+  background: none; border: none; color: var(--danger);
+  font-size: 11px; cursor: pointer; opacity: 0;
+  transition: opacity .2s; font-family: inherit;
+}
+.card:hover .deleteBtn { opacity: 1; }
+
+.actionBtn {
+  width: 100%; padding: 9px 12px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); font-family: 'Rajdhani', sans-serif;
+  font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+  text-transform: uppercase; cursor: pointer;
+  transition: all .2s; margin-bottom: 6px; text-align: center;
+}
+.actionBtn:hover { border-color: var(--accent); color: var(--accent); }
+.danger { color: var(--danger); border-color: var(--danger); }
+.danger:hover { background: rgba(255,59,92,0.08); }

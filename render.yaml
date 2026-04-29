@@ -1,0 +1,53 @@
+services:
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
+  - type: web
+    name: coverageops-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: coverageops-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: '["https://coverageops-ui.onrender.com"]'
+      - key: SRTM_DATA_DIR
+        value: /tmp/srtm
+      - key: RESULTS_DIR
+        value: /tmp/results
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 480
+      - key: COVERAGE_GRID_RESOLUTION
+        value: 80
+      - key: MAX_ANALYSIS_RADIUS_KM
+        value: 350.0
+    plan: free
+
+  # ── React Frontend ─────────────────────────────────────────────────────────
+  - type: web
+    name: coverageops-ui
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        value: https://coverageops-api.onrender.com
+
+databases:
+  - name: coverageops-db
+    plan: free
+    databaseName: coverageops
+    user: coverageops

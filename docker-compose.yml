@@ -1,0 +1,86 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL + PostGIS ────────────────────────────────────────────────────
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: coverageops_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       coverageops
+      POSTGRES_USER:     coverageops
+      POSTGRES_PASSWORD: coverageops
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coverageops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI Backend ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coverageops_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:       postgresql://coverageops:coverageops@db:5432/coverageops
+      SECRET_KEY:         CHANGE_THIS_IN_PRODUCTION_TO_LONG_RANDOM_STRING
+      CORS_ORIGINS:       '["http://localhost:3000","http://localhost:5173"]'
+      SRTM_DATA_DIR:      /data/srtm
+      RESULTS_DIR:        /data/results
+    volumes:
+      - ./backend:/app
+      - srtm_data:/data/srtm
+      - results_data:/data/results
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python -m app.scripts.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # ── React Frontend ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: coverageops_ui
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+    environment:
+      VITE_API_URL: http://localhost:8000
+
+  # ── Nginx reverse proxy (production) ───────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: coverageops_nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/ssl:/etc/nginx/ssl:ro
+    profiles:
+      - production
+
+volumes:
+  pg_data:
+  srtm_data:
+  results_data:

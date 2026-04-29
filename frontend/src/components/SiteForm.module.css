@@ -1,0 +1,54 @@
+.info {
+  background: rgba(0,212,255,0.06);
+  border: 1px solid rgba(0,212,255,0.2);
+  padding: 10px 12px; margin-bottom: 14px;
+  font-size: 11px; color: var(--text-dim); line-height: 1.6;
+}
+
+.group { margin-bottom: 13px; }
+
+.label {
+  display: block; font-size: 10px; letter-spacing: 1.5px;
+  text-transform: uppercase; color: var(--text-dim); margin-bottom: 5px;
+}
+
+.input, .select {
+  width: 100%; padding: 9px 12px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text-bright); font-family: inherit; font-size: 13px;
+  outline: none; transition: border-color .2s;
+}
+.input:focus, .select:focus { border-color: var(--accent); }
+.select option { background: var(--bg2); }
+
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.divider {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--text-dim); margin: 16px 0 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.mapPickBtn {
+  width: 100%; padding: 9px 12px; margin-bottom: 6px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); font-family: 'Rajdhani', sans-serif;
+  font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+  text-transform: uppercase; cursor: pointer; transition: all .2s;
+}
+.mapPickBtn:hover { border-color: var(--accent); color: var(--accent); }
+
+.submitBtn {
+  width: 100%; padding: 11px;
+  background: var(--accent); border: none;
+  color: #000; font-family: 'Rajdhani', sans-serif;
+  font-size: 13px; font-weight: 700; letter-spacing: 2px;
+  text-transform: uppercase; cursor: pointer; transition: all .2s;
+  margin-top: 4px;
+}
+.submitBtn:hover:not(:disabled) { background: #33dfff; box-shadow: 0 0 16px rgba(0,212,255,0.35); }
+.submitBtn:disabled { opacity: 0.6; cursor: not-allowed; }
