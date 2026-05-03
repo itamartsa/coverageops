@@ -34,8 +34,7 @@ services:
   - type: web
     name: coverageops-ui
     runtime: static
-    region: frankfurt: master
-    rootDir: frontend
+    
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     headers:
