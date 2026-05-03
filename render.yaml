@@ -3,9 +3,12 @@ services:
   - type: web
     name: coverageops-api
     runtime: python
+    region: frankfurt
+    branch: master
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
+    healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -31,6 +34,8 @@ services:
   - type: web
     name: coverageops-ui
     runtime: static
+    region: frankfurt
+    branch: master
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
@@ -49,5 +54,6 @@ services:
 databases:
   - name: coverageops-db
     plan: free
+    region: frankfurt
     databaseName: coverageops
     user: coverageops
