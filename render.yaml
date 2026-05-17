@@ -48,6 +48,8 @@ services:
     envVars:
       - key: VITE_API_URL
         value: https://coverageops-api.onrender.com
+      - key: NODE_VERSION
+        value: 20
 
 databases:
   - name: coverageops-db
