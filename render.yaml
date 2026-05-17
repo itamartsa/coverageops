@@ -36,7 +36,7 @@ services:
     runtime: static
     region: frankfurt
     branch: master
-    buildCommand: cd frontend && npm install && npm run build
+    buildCommand: npm install --prefix ./frontend && npm run build --prefix ./frontend
     staticPublishPath: frontend/dist
     headers:
       - path: /*
