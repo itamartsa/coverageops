@@ -6,6 +6,7 @@ services:
     region: frankfurt
     branch: master
     rootDir: backend
+    pythonVersion: "3.12.0"
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     healthCheckPath: /api/health
