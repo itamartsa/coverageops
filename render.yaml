@@ -34,9 +34,10 @@ services:
   - type: web
     name: coverageops-ui
     runtime: static
-    
-    buildCommand: npm install && npm run build
-    staticPublishPath: dist
+    region: frankfurt
+    branch: master
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
     headers:
       - path: /*
         name: Cache-Control
