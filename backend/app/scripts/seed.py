@@ -17,16 +17,16 @@ def seed():
     db = SessionLocal()
 
     # Check if already seeded
-    if db.query(User).filter(User.username == "admin").first():
+    if db.query(User).filter(User.username == "adminuser").first():
         print("✅ DB already seeded")
         db.close()
         return
 
     users = [
         User(
-            username="admin",
+            username="adminuser",
             full_name="מנהל מערכת",
-            hashed_pw=hash_password("Admin1234!"),
+            hashed_pw=hash_password("12345678"),
             role=UserRole.ADMIN,
         ),
         User(
@@ -48,7 +48,7 @@ def seed():
 
     db.commit()
     print("✅ Seeded users:")
-    print("   admin / Admin1234! (ADMIN)")
+    print("   adminuser / 12345678 (ADMIN)")
     print("   operator1 / Ops1234! (OPERATOR)")
     print("   viewer1 / View1234! (VIEWER)")
     db.close()

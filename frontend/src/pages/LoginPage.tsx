@@ -69,7 +69,7 @@ export default function LoginPage() {
         </form>
 
         <div className={styles.hint}>
-          ברירת מחדל: admin / Admin1234!
+          ברירת מחדל: adminuser / 12345678
         </div>
       </div>
     </div>
