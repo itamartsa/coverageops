@@ -16,41 +16,30 @@ Base.metadata.create_all(bind=engine)
 def seed():
     db = SessionLocal()
 
-    # Check if already seeded
-    if db.query(User).filter(User.username == "adminuser").first():
-        print("✅ DB already seeded")
-        db.close()
-        return
-
-    users = [
-        User(
-            username="adminuser",
-            full_name="מנהל מערכת",
-            hashed_pw=hash_password("12345678"),
-            role=UserRole.ADMIN,
-        ),
-        User(
-            username="operator1",
-            full_name="קצין קשר א",
-            hashed_pw=hash_password("Ops1234!"),
-            role=UserRole.OPERATOR,
-        ),
-        User(
-            username="viewer1",
-            full_name="צופה א",
-            hashed_pw=hash_password("View1234!"),
-            role=UserRole.VIEWER,
-        ),
+    users_to_seed = [
+        {"username": "adminuser", "full_name": "מנהל מערכת",  "password": "12345678", "role": UserRole.ADMIN},
+        {"username": "operator1", "full_name": "קצין קשר א", "password": "Ops1234!",  "role": UserRole.OPERATOR},
+        {"username": "viewer1",   "full_name": "צופה א",      "password": "View1234!", "role": UserRole.VIEWER},
     ]
 
-    for u in users:
-        db.add(u)
+    seeded = []
+    for u_data in users_to_seed:
+        if db.query(User).filter(User.username == u_data["username"]).first():
+            continue
+        db.add(User(
+            username=u_data["username"],
+            full_name=u_data["full_name"],
+            hashed_pw=hash_password(u_data["password"]),
+            role=u_data["role"],
+        ))
+        seeded.append(u_data["username"])
 
-    db.commit()
-    print("✅ Seeded users:")
-    print("   adminuser / 12345678 (ADMIN)")
-    print("   operator1 / Ops1234! (OPERATOR)")
-    print("   viewer1 / View1234! (VIEWER)")
+    if seeded:
+        db.commit()
+        print(f"✅ Seeded users: {', '.join(seeded)}")
+    else:
+        print("✅ DB already seeded")
+
     db.close()
 
 
