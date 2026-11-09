@@ -23,7 +23,6 @@ const LAYER_ICONS: Record<string, string> = {
 
 const LAYER_DESCS: Record<string, string> = {
   cellsites: "כל האתרים האזרחיים — המשרד להגנת הסביבה (data.gov.il)",
-  cellular: "מיפוי קהילתי, חלקי — לא מומלץ כמקור עיקרי",
   dem:      "שכבת גבהים דינמית (DEM)",
 };
 

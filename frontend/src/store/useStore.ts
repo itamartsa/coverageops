@@ -40,7 +40,6 @@ export interface MapLayer {
 
 const SYSTEM_LAYERS: MapLayer[] = [
   { id: "cellsites", name: "אתרי סלולר – מאגר ממשלתי", type: "cellular", visible: false },
-  { id: "cellular", name: "אתרי סלולר (OpenStreetMap)", type: "cellular", visible: false },
   { id: "dem",      name: "גבהים (DEM)",          type: "dem",      visible: false },
 ];
 
@@ -225,7 +224,8 @@ export const useStore = create<AppState>()(
             const old = saved.find((l) => l.id === sl.id);
             return old ? { ...sl, visible: old.visible } : sl;
           }),
-          ...saved.filter((l) => !sysIds.has(l.id)),
+          // "cellular" = removed OSM layer; drop it from older persisted state
+          ...saved.filter((l) => !sysIds.has(l.id) && l.id !== "cellular"),
         ];
         return { ...current, ...p, mapLayers };
       },
