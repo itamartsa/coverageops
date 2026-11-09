@@ -51,7 +51,8 @@ coverageops/
 │   │   │   ├── auth.py          # /api/auth/* — login, me
 │   │   │   ├── users.py         # /api/users/* — admin CRUD
 │   │   │   ├── sites.py         # /api/sites/* — site management
-│   │   │   └── coverage.py      # /api/coverage/* — analysis engine
+│   │   │   ├── coverage.py      # /api/coverage/* — analysis engine
+│   │   │   └── osm_towers.py    # /api/cell-sites/osm — OSM towers (Overpass proxy + cache)
 │   │   └── services/
 │   │       ├── coverage_engine.py   # RF propagation model (Deygout, k=4/3), raster helpers
 │   │       ├── terrain.py           # Terrarium tiles → elevation grid (NaN = missing)
@@ -293,6 +294,13 @@ coverageops/
 | GET  | /meta   | כל משתמש | מקור, ספירות לפי סטטוס/מפעיל/סוג/טכנולוגיה, ייבוא אחרון |
 | GET  | /{id}   | כל משתמש | כל השדות של אתר |
 | POST | /sync   | ADMIN    | רענון מ-data.gov.il (נפילה לעותק השמור) |
+| GET  | /osm    | כל משתמש | מגדלי סלולר מ-OpenStreetMap בתיבה `south, west, north, east` (עד 1.5° לכל צד): `{elements[id,lat,lon,operator,height,tags], count, source, cached, bbox}` |
+
+> **שכבת OSM (`osm_towers.py`):** הדפדפן לא פונה עוד ישירות ל-Overpass. השרת מעגל את התיבה כלפי חוץ לרשת של 0.1°,
+> שומר תוצאות במטמון בזיכרון (30 דק', עד 256 רשומות) ומנסה מראות לפי הסדר:
+> `overpass-api.de` → `overpass.kumi.systems` → `overpass.private.coffee` (`[timeout:40]`, 45 ש' לכל מראה; 429/504/5xx/תשובה שאינה JSON → המראה הבאה).
+> תיבה גדולה מדי → 400 ("התקרב למפה…"); כל המראות נכשלו → 503 עם הודעה בעברית.
+> בצד הלקוח: טעינה רק מזום 9 ומעלה, debounce של 700 ms על `moveend`, ביטול הבקשה הקודמת (AbortController), והסמנים הקיימים נשמרים בזמן טעינה/שגיאה.
 
 ## מנוע הפצה (coverage_engine.py)
 

@@ -13,7 +13,7 @@ export const CELL_OPERATORS: Record<string, { label: string; color: string; note
 
 export const ALL_OPERATORS = ["PHI", "PELEPHONE", "CELLCOM", "OTHER"];
 
-const esc = (v: unknown) =>
+export const esc = (v: unknown) =>
   String(v ?? "—").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 

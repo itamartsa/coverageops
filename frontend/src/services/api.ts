@@ -422,4 +422,31 @@ export const cellSitesApi = {
   sync: async () => (await api.post("/api/cell-sites/sync", null, { timeout: 120000 })).data,
 };
 
+// ── OSM cellular towers (Overpass, proxied + cached by the backend) ──────────
+export interface OsmTower {
+  id: number;
+  lat: number;
+  lon: number;
+  operator: string | null;
+  height: string | null;
+  tags: Record<string, string>;
+}
+
+export interface OsmTowersResponse {
+  elements: OsmTower[];
+  count: number;
+  source: string;
+  cached: boolean;
+  bbox: { south: number; west: number; north: number; east: number };
+}
+
+export const osmTowersApi = {
+  /** bbox ≤ 1.5° per side; server answers 400 (too large) / 503 (Overpass busy) with a Hebrew `detail`. */
+  list: async (
+    bbox: { south: number; west: number; north: number; east: number },
+    signal?: AbortSignal,
+  ): Promise<OsmTowersResponse> =>
+    (await api.get("/api/cell-sites/osm", { params: bbox, signal, timeout: 150000 })).data,
+};
+
 export default api;

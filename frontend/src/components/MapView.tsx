@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
-import api, { apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
+import api, { apiErrorText, apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi, osmTowersApi } from "../services/api";
 import type { CellSiteRow } from "../services/api";
-import { CELL_OPERATORS, cellSitePopupHtml } from "../lib/cellSites";
+import { CELL_OPERATORS, cellSitePopupHtml, esc } from "../lib/cellSites";
 import styles from "./MapView.module.css";
 
 // Coverage colors matching backend levels
@@ -317,35 +317,46 @@ export default function MapView() {
     if (demBlobUrlRef.current) { URL.revokeObjectURL(demBlobUrlRef.current); demBlobUrlRef.current = null; }
   }, []);
 
-  // ── Cellular towers (Overpass API) ────────────────────────────────────────────
+  // ── Cellular towers (OpenStreetMap via backend proxy → Overpass, cached) ──────
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const visible = mapLayers.find((l) => l.id === "cellular")?.visible ?? false;
-
-    if (!visible) {
+    const clearTowers = () => {
       if (cellularRef.current) { map.removeLayer(cellularRef.current); cellularRef.current = null; }
-      return;
-    }
+    };
 
-    async function fetchTowers() {
-      if (!map) return;
+    if (!visible) { clearTowers(); return; }
+
+    const MIN_ZOOM = 9;
+    let ctrl: AbortController | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let zoomHintShown = false;
+    let lastErr = "";
+
+    const fetchTowers = async () => {
+      ctrl?.abort();                       // drop any in-flight request for an older viewport
+      if (map.getZoom() < MIN_ZOOM) {
+        clearTowers();
+        if (!zoomHintShown) { zoomHintShown = true; notify("🔍 התקרב למפה (זום 9 ומעלה) כדי לטעון אתרי סלולר מ-OSM"); }
+        return;
+      }
+      zoomHintShown = false;
+      const myCtrl = ctrl = new AbortController();
       const b = map.getBounds();
-      const bbox = `${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`;
-      const query = `[out:json][timeout:25];(node["tower:type"="communication"](${bbox});node["man_made"="mast"]["communication:mobile_phone"="yes"](${bbox});node["man_made"="tower"]["communication"="mobile_phone"](${bbox}););out body;`;
-
       try {
-        const res = await fetch("https://overpass-api.de/api/interpreter", {
-          method: "POST", body: query,
-        });
-        const data = await res.json();
-        if (cellularRef.current) map.removeLayer(cellularRef.current);
+        // Existing markers stay on the map while loading
+        const data = await osmTowersApi.list(
+          { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() },
+          myCtrl.signal,
+        );
+        if (myCtrl.signal.aborted) return;
 
         const group = L.layerGroup();
-        (data.elements ?? []).forEach((el: any) => {
-          if (!el.lat || !el.lon) return;
-          const operator = el.tags?.operator ?? el.tags?.["operator:he"] ?? "לא ידוע";
-          const height   = el.tags?.height ?? "—";
+        data.elements.forEach((el) => {
+          // OSM tags are user-editable → escape before interpolating into HTML
+          const operator = esc(el.operator ?? "לא ידוע");
+          const height   = esc(el.height ?? "—");
           const icon = L.divIcon({
             className: "",
             html: `<div title="${operator}" style="
@@ -365,17 +376,31 @@ export default function MapView() {
               </div>`)
             .addTo(group);
         });
+        clearTowers();
         cellularRef.current = group;
         group.addTo(map);
-        notify(`📡 נטענו ${data.elements?.length ?? 0} אתרי סלולר`);
-      } catch {
-        notify("⚠ שגיאה בטעינת אתרי סלולר");
+        lastErr = "";
+        notify(`📡 נטענו ${data.count} אתרי סלולר (OSM)${data.cached ? " (מטמון)" : ""}`);
+      } catch (err: any) {
+        if (myCtrl.signal.aborted || err?.code === "ERR_CANCELED") return;
+        // Keep the markers already shown; surface the server's Hebrew detail once per distinct message
+        const msg = apiErrorText(err, "שגיאה בטעינת אתרי סלולר מ-OSM");
+        if (msg !== lastErr) { lastErr = msg; notify(`⚠ ${msg}`); }
       }
-    }
+    };
+
+    const onMoveEnd = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(fetchTowers, 700);
+    };
 
     fetchTowers();
-    map.on("moveend", fetchTowers);
-    return () => { map.off("moveend", fetchTowers); };
+    map.on("moveend", onMoveEnd);
+    return () => {
+      map.off("moveend", onMoveEnd);
+      if (timer) clearTimeout(timer);
+      ctrl?.abort();
+    };
   }, [mapLayers.find((l) => l.id === "cellular")?.visible]);
 
   // ── Civil cellular sites (data.gov.il via backend) ───────────────────────────

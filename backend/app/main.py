@@ -11,7 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.migrations import run_startup_migrations
-from app.api import auth, sites, coverage, users, cell_sites
+from app.api import auth, sites, coverage, users, cell_sites, osm_towers
 from app.models import cell_site  # noqa: F401  (register cell_sites tables)
 from app.core.database import SessionLocal
 from app.services.cell_sites_import import ensure_loaded
@@ -67,6 +67,8 @@ app.include_router(auth.router,     prefix="/api/auth",     tags=["auth"])
 app.include_router(users.router,    prefix="/api/users",    tags=["users"])
 app.include_router(sites.router,    prefix="/api/sites",    tags=["sites"])
 app.include_router(coverage.router, prefix="/api/coverage", tags=["coverage"])
+# osm_towers before cell_sites: otherwise /api/cell-sites/osm is captured by /api/cell-sites/{site_id}
+app.include_router(osm_towers.router, prefix="/api/cell-sites/osm", tags=["cell-sites"])
 app.include_router(cell_sites.router, prefix="/api/cell-sites", tags=["cell-sites"])
 
 
