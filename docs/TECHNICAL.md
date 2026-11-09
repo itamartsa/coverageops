@@ -167,6 +167,30 @@ coverageops/
 
 ---
 
+### cell_sites / cell_sites_sync
+שכבת אתרי סלולר אזרחיים — מיובאת מ-data.gov.il (המשרד להגנת הסביבה).
+
+| שדה | הערה |
+|---|---|
+| status | `active` / `construction` |
+| operator | `PHI` / `PELEPHONE` / `CELLCOM` / `OTHER` (+ `operator_he` מקורי) |
+| site_code, city, address, authority, jurisdiction | כמו במקור |
+| site_type / site_type_he | מנורמל (ground_mast, rooftop_mast, small_indoor, sting, wireless_access, tilted) + מקור |
+| technologies | למשל `2G,3G,4G,5G` |
+| lat, lon | WGS84 — הומר מ-ITM (EPSG:2039) ב-`services/itm.py` (פייתון טהור, ללא pyproj; דיוק ~3 מ') |
+| x_itm, y_itm | קואורדינטות המקור |
+| *_permit_date, last_periodic_check, max_pct_of_threshold, *_permit_url | אתרים פעילים |
+| request_date, permit_type, reference_no | אתרים בהקמה |
+
+`cell_sites_sync` — שורה לכל ייבוא (מקור live/snapshot, מועד משיכה, ספירות).
+
+מקורות (CKAN datastore API):
+- `antennaactive` — resource `8935c8e5-ec77-421f-af86-d970583195f8`
+- `antenna_hakama` — resource `ff398c7e-c522-4ee8-a53a-312b188a573d`
+
+עותק שמור: `backend/app/seed_data/cell_sites_snapshot.json.gz` — נטען אוטומטית באתחול (`init_db`) אם הטבלה ריקה.
+ייבוא ידני: `python -m app.scripts.import_cell_sites` (חי, עם נפילה לעותק) או `--snapshot`.
+
 ## API Endpoints
 
 ### Authentication — `/api/auth`
@@ -261,6 +285,14 @@ coverageops/
   לא ידועים), `covered_pct` הוא הערך הישן השמור, ואזהרת legacy מופיעה ראשונה בהמלצות.
 
 ---
+
+### Cell sites — `/api/cell-sites`
+| Method | Path | הרשאה | תיאור |
+|--------|------|-------|-------|
+| GET  | /       | כל משתמש | רשימה דחוסה למפה: `{fields, rows}`; פילטרים `status`, `operator` (מופרד בפסיקים) |
+| GET  | /meta   | כל משתמש | מקור, ספירות לפי סטטוס/מפעיל/סוג/טכנולוגיה, ייבוא אחרון |
+| GET  | /{id}   | כל משתמש | כל השדות של אתר |
+| POST | /sync   | ADMIN    | רענון מ-data.gov.il (נפילה לעותק השמור) |
 
 ## מנוע הפצה (coverage_engine.py)
 

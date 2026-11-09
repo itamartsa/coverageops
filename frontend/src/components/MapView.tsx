@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
-import api, { apiErrorTextAsync, sitesApi, coverageApi } from "../services/api";
+import api, { apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
+import type { CellSiteRow } from "../services/api";
+import { CELL_OPERATORS, cellSitePopupHtml } from "../lib/cellSites";
 import styles from "./MapView.module.css";
 
 // Coverage colors matching backend levels
@@ -56,6 +58,10 @@ export default function MapView() {
   const demOverlayRef   = useRef<L.ImageOverlay | null>(null);
   const demBlobUrlRef   = useRef<string | null>(null);
   const cellularRef     = useRef<L.LayerGroup | null>(null);
+  // Civil cellular sites (gov data) — canvas-rendered for ~9k points
+  const cellSitesRef     = useRef<L.LayerGroup | null>(null);
+  const cellSitesDataRef = useRef<CellSiteRow[] | null>(null);
+  const cellCanvasRef    = useRef<L.Canvas | null>(null);
 
   const {
     sites, drawMode, setDrawMode, setBbox, bbox,
@@ -63,6 +69,7 @@ export default function MapView() {
     selectedSiteIds, routeWaypoints, setRouteWaypoints,
     crossSectionResult,
     activeBaseMapId, mapLayers,
+    cellSiteFilter, cellSitesVersion,
   } = useStore();
 
   // ── Init map ────────────────────────────────────────────────────────────────
@@ -370,6 +377,63 @@ export default function MapView() {
     map.on("moveend", fetchTowers);
     return () => { map.off("moveend", fetchTowers); };
   }, [mapLayers.find((l) => l.id === "cellular")?.visible]);
+
+  // ── Civil cellular sites (data.gov.il via backend) ───────────────────────────
+  const cellSitesVisible = mapLayers.find((l) => l.id === "cellsites")?.visible ?? false;
+  const cellSitesLoadedVersion = useRef(-1);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (cellSitesRef.current) { map.removeLayer(cellSitesRef.current); cellSitesRef.current = null; }
+    if (!cellSitesVisible) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!cellSitesDataRef.current || cellSitesLoadedVersion.current !== cellSitesVersion) {
+          cellSitesDataRef.current = await cellSitesApi.list();
+          cellSitesLoadedVersion.current = cellSitesVersion;
+        }
+        if (cancelled) return;
+        const renderer = cellCanvasRef.current ?? (cellCanvasRef.current = L.canvas({ padding: 0.5 }));
+        const ops = new Set(cellSiteFilter.operators);
+        const group = L.layerGroup();
+        let n = 0;
+        for (const s of cellSitesDataRef.current) {
+          if (!ops.has(s.operator)) continue;
+          const building = s.status === "construction";
+          if (building && !cellSiteFilter.showConstruction) continue;
+          const color = (CELL_OPERATORS[s.operator] ?? CELL_OPERATORS.OTHER).color;
+          const m = L.circleMarker([s.lat, s.lon], {
+            renderer,
+            radius: building ? 5 : 4,
+            color: building ? color : "#ffffff",
+            weight: building ? 2 : 1,
+            dashArray: building ? "2 2" : undefined,
+            fillColor: color,
+            fillOpacity: building ? 0.15 : 0.9,
+          });
+          m.bindPopup("טוען…", { maxWidth: 320 });
+          m.on("popupopen", async (e: L.PopupEvent) => {
+            try {
+              e.popup.setContent(cellSitePopupHtml(await cellSitesApi.get(s.id)));
+            } catch {
+              e.popup.setContent("⚠ שגיאה בטעינת פרטי האתר");
+            }
+          });
+          m.addTo(group);
+          n++;
+        }
+        if (cancelled) return;
+        group.addTo(map);
+        cellSitesRef.current = group;
+        notify(`📡 מוצגים ${n.toLocaleString("he-IL")} אתרי סלולר (מאגר ממשלתי)`);
+      } catch {
+        notify("⚠ שגיאה בטעינת שכבת אתרי הסלולר מהשרת");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cellSitesVisible, cellSiteFilter, cellSitesVersion]);
 
   // ── Coverage PNG overlays (from mapLayers) ───────────────────────────────────
   useEffect(() => {

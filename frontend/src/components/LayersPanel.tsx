@@ -3,6 +3,7 @@ import { useStore } from "../store/useStore";
 import type { BaseMapId, MapLayer } from "../store/useStore";
 import { fmtCoveredVsThreshold, demStatus, isLegacyThreshold } from "../services/coverageFormat";
 import styles from "./LayersPanel.module.css";
+import CellSitesInfo from "./CellSitesInfo";
 
 // ── Base-map catalogue ────────────────────────────────────────────────────────
 const BASE_MAPS: { id: BaseMapId; label: string; icon: string; desc: string }[] = [
@@ -21,7 +22,8 @@ const LAYER_ICONS: Record<string, string> = {
 };
 
 const LAYER_DESCS: Record<string, string> = {
-  cellular: "אתרי סלולר מ-OpenStreetMap",
+  cellsites: "כל האתרים האזרחיים — המשרד להגנת הסביבה (data.gov.il)",
+  cellular: "מיפוי קהילתי, חלקי — לא מומלץ כמקור עיקרי",
   dem:      "שכבת גבהים דינמית (DEM)",
 };
 
@@ -33,10 +35,15 @@ export default function LayersPanel() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName,  setEditName]  = useState("");
+  const [infoOpen,  setInfoOpen]  = useState<string | null>(null);
 
   const systemLayers   = mapLayers.filter((l) => l.type !== "coverage");
   const coverageLayers = mapLayers.filter((l) => l.type === "coverage")
     .slice().reverse(); // newest first
+
+  // Info panel opens automatically when the layer is shown; the ⓘ button toggles it
+  const isInfoOpen = (layer: MapLayer) =>
+    infoOpen === layer.id || (layer.visible && infoOpen !== "closed");
 
   function startRename(layer: MapLayer) {
     setEditingId(layer.id);
@@ -71,7 +78,8 @@ export default function LayersPanel() {
       {/* ── System layers ─────────────────────────────────────────────────── */}
       <div className={styles.sectionHeader} style={{ marginTop: 18 }}>שכבות מידע</div>
       {systemLayers.map((layer) => (
-        <div key={layer.id} className={styles.layerRow}>
+        <div key={layer.id}>
+        <div className={styles.layerRow}>
           <button
             className={`${styles.visBtn} ${layer.visible ? styles.visBtnOn : ""}`}
             onClick={() => toggleMapLayer(layer.id)}
@@ -84,6 +92,17 @@ export default function LayersPanel() {
             <div className={styles.layerName}>{layer.name}</div>
             <div className={styles.layerDesc}>{LAYER_DESCS[layer.id] ?? ""}</div>
           </div>
+          {layer.id === "cellsites" && (
+            <button
+              className={`${styles.infoBtn} ${isInfoOpen(layer) ? styles.infoBtnOn : ""}`}
+              onClick={() => setInfoOpen(isInfoOpen(layer) ? "closed" : layer.id)}
+              title="מידע על הנתונים וסינון"
+            >ⓘ</button>
+          )}
+        </div>
+        {layer.id === "cellsites" && isInfoOpen(layer) && (
+          <CellSitesInfo />
+        )}
         </div>
       ))}
 

@@ -11,12 +11,27 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.migrations import run_startup_migrations
-from app.api import auth, sites, coverage, users
+from app.api import auth, sites, coverage, users, cell_sites
+from app.models import cell_site  # noqa: F401  (register cell_sites tables)
+from app.core.database import SessionLocal
+from app.services.cell_sites_import import ensure_loaded
 
 def init_db() -> None:
     """Create tables, then add columns introduced after first deployment."""
     Base.metadata.create_all(bind=engine)
     run_startup_migrations(engine)
+    load_cell_sites()
+
+
+def load_cell_sites() -> None:
+    """Civil cellular-sites layer: load the bundled snapshot if the table is empty."""
+    db = SessionLocal()
+    try:
+        ensure_loaded(db)
+    except Exception as e:  # never block startup on the layer
+        print(f"⚠️  cell_sites load skipped: {e}")
+    finally:
+        db.close()
 
 
 # DB initialisation runs at application startup (not at import time), so the
@@ -52,6 +67,7 @@ app.include_router(auth.router,     prefix="/api/auth",     tags=["auth"])
 app.include_router(users.router,    prefix="/api/users",    tags=["users"])
 app.include_router(sites.router,    prefix="/api/sites",    tags=["sites"])
 app.include_router(coverage.router, prefix="/api/coverage", tags=["coverage"])
+app.include_router(cell_sites.router, prefix="/api/cell-sites", tags=["cell-sites"])
 
 
 @app.get("/api/health")

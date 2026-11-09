@@ -39,7 +39,8 @@ export interface MapLayer {
 }
 
 const SYSTEM_LAYERS: MapLayer[] = [
-  { id: "cellular", name: "אתרי סלולר אזרחיים", type: "cellular", visible: false },
+  { id: "cellsites", name: "אתרי סלולר – מאגר ממשלתי", type: "cellular", visible: false },
+  { id: "cellular", name: "אתרי סלולר (OpenStreetMap)", type: "cellular", visible: false },
   { id: "dem",      name: "גבהים (DEM)",          type: "dem",      visible: false },
 ];
 
@@ -99,6 +100,12 @@ interface AppState {
   removeMapLayer: (id: string) => void;
   toggleMapLayer: (id: string) => void;
   renameMapLayer: (id: string, name: string) => void;
+
+  // ── Civil cellular sites layer ──────────────────────────────────────────────
+  cellSiteFilter: { operators: string[]; showConstruction: boolean };
+  setCellSiteFilter: (f: Partial<AppState["cellSiteFilter"]>) => void;
+  cellSitesVersion: number;          // bump to force re-fetch after a sync
+  bumpCellSitesVersion: () => void;
 }
 
 export const useStore = create<AppState>()(
@@ -185,6 +192,11 @@ export const useStore = create<AppState>()(
           ),
         })),
 
+      cellSiteFilter: { operators: ["PHI", "PELEPHONE", "CELLCOM", "OTHER"], showConstruction: true },
+      setCellSiteFilter: (f) => set((s) => ({ cellSiteFilter: { ...s.cellSiteFilter, ...f } })),
+      cellSitesVersion: 0,
+      bumpCellSitesVersion: () => set((s) => ({ cellSitesVersion: s.cellSitesVersion + 1 })),
+
       renameMapLayer: (id, name) =>
         set((s) => ({
           mapLayers: s.mapLayers.map((l) =>
@@ -201,7 +213,22 @@ export const useStore = create<AppState>()(
         activeBaseMapId: s.activeBaseMapId,
         // Persist layer metadata (not blobs — those are fetched on demand)
         mapLayers:      s.mapLayers,
+        cellSiteFilter: s.cellSiteFilter,
       }),
+      // Make sure system layers added in newer versions appear for existing users
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<AppState>;
+        const saved = p.mapLayers ?? [];
+        const sysIds = new Set(SYSTEM_LAYERS.map((l) => l.id));
+        const mapLayers = [
+          ...SYSTEM_LAYERS.map((sl) => {
+            const old = saved.find((l) => l.id === sl.id);
+            return old ? { ...sl, visible: old.visible } : sl;
+          }),
+          ...saved.filter((l) => !sysIds.has(l.id)),
+        ];
+        return { ...current, ...p, mapLayers };
+      },
     }
   )
 );

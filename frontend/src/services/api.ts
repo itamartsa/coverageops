@@ -367,4 +367,52 @@ export const usersApi = {
   remove: async (id: number) => api.delete(`/api/users/${id}`),
 };
 
+// ── Civil cellular sites (data.gov.il) ────────────────────────────────────────
+export interface CellSiteRow {
+  id: number; lat: number; lon: number;
+  operator: string; status: "active" | "construction";
+  site_type: string; techs: string;
+}
+
+export interface CellSiteDetail {
+  id: number; status: string; operator: string; operator_he: string | null;
+  site_code: string | null; city: string | null; address: string | null;
+  authority: string | null; jurisdiction: string | null;
+  site_type: string | null; site_type_he: string | null; technologies: string | null;
+  lat: number; lon: number;
+  construction_permit_date: string | null; operation_permit_date: string | null;
+  last_periodic_check: string | null; radiation_permit: string | null;
+  max_power_uw_cm2: number | null; max_pct_of_threshold: number | null;
+  construction_permit_url: string | null; operation_permit_url: string | null;
+  request_date: string | null; permit_type: string | null;
+}
+
+export interface CellSitesMeta {
+  source: {
+    publisher: string; portal: string; update_frequency: string; crs_note: string;
+    datasets: { id: string; title: string; url: string }[];
+  };
+  total: number;
+  by_status: Record<string, number>;
+  by_operator: Record<string, number>;
+  by_site_type: Record<string, number>;
+  by_technology: Record<string, number>;
+  last_sync: null | {
+    synced_at: string; source: "live" | "snapshot"; data_fetched_at: string | null;
+    active: number; construction: number; skipped: number; note: string | null;
+  };
+}
+
+export const cellSitesApi = {
+  list: async (): Promise<CellSiteRow[]> => {
+    const { data } = await api.get("/api/cell-sites/");
+    const f: string[] = data.fields;
+    return data.rows.map((r: unknown[]) =>
+      Object.fromEntries(f.map((k, i) => [k, r[i]])) as unknown as CellSiteRow);
+  },
+  meta: async (): Promise<CellSitesMeta> => (await api.get("/api/cell-sites/meta")).data,
+  get:  async (id: number): Promise<CellSiteDetail> => (await api.get(`/api/cell-sites/${id}`)).data,
+  sync: async () => (await api.post("/api/cell-sites/sync", null, { timeout: 120000 })).data,
+};
+
 export default api;
