@@ -234,3 +234,68 @@
   font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
   color: var(--accent2); margin-bottom: 8px; letter-spacing: 1px;
 }
+
+/* ── Per-site run progress ─────────────────────────────────────────────── */
+.runList { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.runRow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 5px 8px; font-size: 11px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-right: 3px solid var(--text-dim);
+}
+.runName { flex: 1; color: var(--text); }
+.runStatus { font-size: 10px; letter-spacing: .5px; color: var(--text-dim); }
+.run_queued { border-right-color: var(--text-dim); }
+.run_queued .runStatus { color: var(--text-dim); }
+.run_pending { border-right-color: var(--accent); }
+.run_pending .runStatus { color: var(--accent); }
+.run_done { border-right-color: var(--accent2); }
+.run_done .runStatus { color: var(--accent2); }
+.run_failed { border-right-color: var(--danger); }
+.run_failed .runStatus { color: var(--danger); }
+.runError { width: 100%; font-size: 10px; color: var(--danger); line-height: 1.4; }
+
+/* ── Results ───────────────────────────────────────────────────────────── */
+.siteResultTitle { display: flex; align-items: center; gap: 8px; }
+.demBadge {
+  margin-right: auto; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+  padding: 1px 6px; border-radius: 2px; border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.dem_real      { border-color: var(--accent2); color: var(--accent2); background: rgba(0,255,136,0.08); }
+.dem_simulated { border-color: var(--warn);    color: var(--warn);    background: rgba(255,179,71,0.12); }
+
+.warnBox {
+  background: rgba(255,179,71,0.10); border: 1px solid var(--warn);
+  border-right: 3px solid var(--accent3);
+  padding: 7px 9px; margin-bottom: 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.warnLine { display: flex; gap: 6px; font-size: 11px; line-height: 1.45; color: var(--warn); }
+.warnLine > span:first-child { flex-shrink: 0; }
+
+.coveredMain {
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 10px; text-align: center; margin-bottom: 6px;
+}
+.coveredValue {
+  font-family: 'Rajdhani', sans-serif; font-size: 22px; font-weight: 700;
+  color: var(--accent2); direction: ltr;
+}
+.coveredSecondary { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+.coveredSecondary strong { color: var(--text); }
+
+.statsGrid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+.statsGrid3 .statBox { padding: 8px 4px; }
+
+.metaRow {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: center;
+  font-size: 10px; color: var(--text-dim); margin-bottom: 4px;
+}
+.metaRow strong { color: var(--text); font-weight: 600; }
+
+.inlineCode {
+  font-family: monospace; background: var(--bg); padding: 0 4px;
+  color: var(--accent2); direction: ltr; display: inline-block;
+}
+.statsGrid3 .statValue { font-size: 17px; }

@@ -30,6 +30,32 @@ api.interceptors.response.use(
   }
 );
 
+// ── Error text ────────────────────────────────────────────────────────────────
+function detailToText(detail: unknown): string | null {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail.length)
+    return detail.map((d: any) => d?.msg ?? String(d)).join("; ");
+  return null;
+}
+
+/** Server `detail` (e.g. Hebrew 413/400 "area too large") or a fallback. JSON responses only. */
+export function apiErrorText(err: any, fallback = "שגיאה בחישוב"): string {
+  return detailToText(err?.response?.data?.detail) ?? err?.message ?? fallback;
+}
+
+/** Same as apiErrorText, but also reads `detail` from a Blob body (requests with responseType "blob"). */
+export async function apiErrorTextAsync(err: any, fallback = "שגיאה בחישוב"): Promise<string> {
+  const data = err?.response?.data;
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    try {
+      const t = detailToText(JSON.parse(await data.text())?.detail);
+      if (t) return t;
+    } catch { /* not JSON */ }
+    return err?.message ?? fallback;
+  }
+  return apiErrorText(err, fallback);
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export const authApi = {
   login: async (username: string, password: string) => {
@@ -83,20 +109,44 @@ export interface CoverageRequest {
   resolution?: number;
 }
 
+export type DemSource = "terrarium" | "none" | string;
+
+export interface LevelBucket { count: number; pct: number }
+export type CoverageLevel = "excellent" | "good" | "medium" | "weak" | "marginal" | "none";
+
 export interface CoverageResult {
   id:          number;
   site_id:     number;
   mode:        string;
+  /** % of area at/above the site's rx_threshold (threshold_dbm). */
   covered_pct: number;
+  /** % of area with any signal (> −110 dBm) — legacy meaning of covered_pct. */
+  covered_pct_any_signal?: number | null;
+  threshold_dbm?: number | null;
+  weak_pct?:      number | null;
+  level_distribution?: Partial<Record<CoverageLevel, LevelBucket>> | null;
   rssi_avg:    number;
   rssi_max:    number;
   rssi_min:    number;
   duration_sec: number;
   created_at:  string;
-  geojson:     GeoJSON.FeatureCollection;
   // Bounding box — used to position the PNG image overlay on the map
   sw_lat?: number; sw_lon?: number;
   ne_lat?: number; ne_lon?: number;
+  // Data-quality metadata
+  dem_source?:         DemSource | null;
+  dem_valid_pct?:      number | null;
+  dem_m_per_px?:       number | null;
+  resolution?:         number | null;
+  model?:              string | null;
+  diffraction_method?: string | null;
+  warnings?:           string[] | null;
+  risk_level?:   string | null;
+  /** 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL */
+  risk_score?:   number | null;
+  rssi_min_all?: number | null;
+  /** No longer returned by the API — use coverageApi.downloadResultGeojson(). */
+  geojson?:            GeoJSON.FeatureCollection;
 }
 
 export interface HistoryItem {
@@ -104,10 +154,19 @@ export interface HistoryItem {
   site_id:     number;
   site_name:   string;
   mode:        string;
-  covered_pct: number;
-  rssi_avg:    number;
-  rssi_max:    number;
-  rssi_min:    number;
+  covered_pct: number | null;
+  covered_pct_any_signal?: number | null;
+  threshold_dbm?: number | null;
+  weak_pct?:      number | null;
+  dem_source?:    DemSource | null;
+  dem_valid_pct?: number | null;
+  resolution?:    number | null;
+  rssi_avg:    number | null;
+  rssi_max:    number | null;
+  rssi_min:    number | null;
+  risk_level?:   string | null;
+  risk_score?:   number | null;
+  rssi_min_all?: number | null;
   duration_sec: number;
   created_at:  string;
   poly_sw_lat: number; poly_sw_lon: number;
@@ -121,6 +180,10 @@ export interface CoverageReport {
     ant_height: number; frequency: number;
     tx_power: number; rx_threshold: number; max_radius: number;
     mode: string; analysis_date: string; duration_sec: number;
+    /** Threshold the report's percentages were computed against; null/absent for legacy results. */
+    threshold_dbm?: number | null;
+    /** True when the underlying result predates threshold_dbm (percentages = any signal). */
+    legacy?: boolean;
   };
   macro: {
     covered_pct: number; rssi_avg: number; rssi_max: number; rssi_min: number;
@@ -140,13 +203,22 @@ export interface CoverageReport {
   };
   risk?: {
     level: string;
-    score: number;
+    /** 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL */
+    score?: number | null;
   };
   dead_zones_clusters?: Array<{
     centroid_lat: number; centroid_lon: number;
     cell_count: number; severity: string; rssi_avg: number;
   }>;
   recommendations?: string[];
+  data_quality?: {
+    dem_source?:         DemSource | null;
+    dem_valid_pct?:      number | null;
+    dem_m_per_px?:       number | null;
+    resolution?:         number | null;
+    diffraction_method?: string | null;
+  } | null;
+  warnings?: string[] | null;
 }
 
 // ── Cross-section ─────────────────────────────────────────────────────────────
@@ -183,6 +255,13 @@ export interface CrossSectionResult {
   signal_distribution: Record<string, { count: number; pct: number }>;
   recommendations: string[];
   duration_sec: number;
+  /** 1=LOW, 2=MEDIUM, 3=HIGH, 4=CRITICAL */
+  risk_score?:    number | null;
+  covered_pct_any_signal?: number | null;
+  threshold_dbm?: number | null;
+  dem_source?:    DemSource | null;
+  dem_valid_pct?: number | null;
+  warnings?:      string[] | null;
 }
 
 export interface CrossSectionRequest {
@@ -190,6 +269,17 @@ export interface CrossSectionRequest {
   mode:       "DTM" | "DSM";
   waypoints:  { lat: number; lon: number }[];
   resolution?: number;
+}
+
+/** Save a Blob to disk via a temporary <a download>. */
+export function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a   = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export const coverageApi = {
@@ -207,19 +297,40 @@ export const coverageApi = {
   getReport:    async (id: number): Promise<CoverageReport> =>
     (await api.get(`/api/coverage/result/${id}/report`)).data,
 
+  /** Server renders the result's stored bbox; the bbox param is kept only for
+   *  backward compatibility (the server ignores it). */
   resultPng: async (
     id: number,
-    bbox: { sw_lat: number; sw_lon: number; ne_lat: number; ne_lon: number },
+    bbox?: { sw_lat: number; sw_lon: number; ne_lat: number; ne_lon: number },
   ): Promise<string> => {
-    const p = new URLSearchParams({
-      sw_lat: bbox.sw_lat.toString(), sw_lon: bbox.sw_lon.toString(),
-      ne_lat: bbox.ne_lat.toString(), ne_lon: bbox.ne_lon.toString(),
-      width: "900", height: "900",
-    });
+    const p = new URLSearchParams({ width: "900", height: "900" });
+    if (bbox) {
+      p.set("sw_lat", bbox.sw_lat.toString()); p.set("sw_lon", bbox.sw_lon.toString());
+      p.set("ne_lat", bbox.ne_lat.toString()); p.set("ne_lon", bbox.ne_lon.toString());
+    }
     const res = await api.get(`/api/coverage/result/${id}/png?${p}`, {
       responseType: "blob",
     });
     return URL.createObjectURL(res.data);
+  },
+
+  /** Relative endpoint path of the downloadable GeoJSON (needs auth header —
+   *  use downloadResultGeojson rather than a plain <a href>). */
+  resultGeojsonUrl: (id: number): string => `/api/coverage/result/${id}/geojson`,
+
+  /** Fetches the GeoJSON with the JWT (axios interceptor) and triggers a download. */
+  downloadResultGeojson: async (id: number, filename?: string): Promise<void> => {
+    const res = await api.get(coverageApi.resultGeojsonUrl(id), { responseType: "blob" });
+    const blob: Blob = res.data instanceof Blob
+      ? res.data
+      : new Blob([JSON.stringify(res.data)], { type: "application/geo+json" });
+    let name = filename;
+    if (!name) {
+      const cd: string | undefined = res.headers?.["content-disposition"];
+      const m = cd?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+      name = m ? decodeURIComponent(m[1]) : `coverage_${id}.geojson`;
+    }
+    triggerBlobDownload(blob, name);
   },
 
   crossSection: async (req: CrossSectionRequest): Promise<CrossSectionResult> =>

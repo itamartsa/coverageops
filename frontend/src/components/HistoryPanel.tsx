@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { coverageApi, type HistoryItem, type CoverageReport } from "../services/api";
+import { coverageApi, triggerBlobDownload, type HistoryItem, type CoverageReport } from "../services/api";
+import {
+  DASH, demLabel, demStatus, fmtCoveredVsThreshold, fmtDbm, fmtNum, fmtPct, fmtThresholdLabel,
+  isLegacyThreshold, layerFromResult,
+} from "../services/coverageFormat";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import styles from "./HistoryPanel.module.css";
@@ -26,10 +30,21 @@ const RISK_HE_LABELS: Record<string, string> = {
   CRITICAL: "קריטי", HIGH: "גבוה", MEDIUM: "בינוני", LOW: "נמוך",
 };
 
+function esc(v: unknown): string {
+  return String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
 // ── HTML Report Generator ────────────────────────────────────────────────────
 function buildReportHTML(r: CoverageReport): string {
   const { meta, macro, signal_distribution, propagation,
-          operational_summary, risk, dead_zones_clusters, recommendations } = r;
+          operational_summary, risk, dead_zones_clusters, recommendations, data_quality } = r;
+  const dq = data_quality ?? null;
+  // Only label percentages with the threshold that came WITH the report — never the site's current rx_threshold.
+  const reportThreshold = meta.legacy ? null : meta.threshold_dbm;
+  const legacy = isLegacyThreshold(reportThreshold);
+  const coveredLbl = esc(legacy ? `שטח מכוסה – ${fmtThresholdLabel(null)}` : `שטח מכוסה (${fmtThresholdLabel(reportThreshold)})`);
+  const riskScoreTxt = risk?.score != null ? fmtNum(risk.score, 0) : DASH;
 
   const distRows = Object.entries(signal_distribution)
     .map(([lvl, d]) => `
@@ -68,11 +83,12 @@ function buildReportHTML(r: CoverageReport): string {
     <div>
       <div style="font-size:12px;color:#555;margin-bottom:2px;">רמת סיכון</div>
       <div style="background:${riskColor};color:#fff;font-size:14px;font-weight:700;padding:4px 14px;border-radius:3px;display:inline-block;">${riskLabel}</div>
+      <div style="font-size:12px;color:#555;margin-top:4px;">ציון סיכון: <b style="color:${riskColor}">${riskScoreTxt}</b>${risk?.score != null ? " / 4" : ""}</div>
     </div>
     <div style="margin-right:auto;font-size:13px;color:#333;max-width:55%;">${opConclusion}</div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;">
-    <div class="stat-box"><div class="stat-val" style="color:${riskColor}">${operational_summary.covered_pct}%</div><div class="stat-lbl">שטח מכוסה</div></div>
+    <div class="stat-box"><div class="stat-val" style="color:${riskColor}">${operational_summary.covered_pct}%</div><div class="stat-lbl">${coveredLbl}</div></div>
     <div class="stat-box"><div class="stat-val">${operational_summary.dead_zones_count}</div><div class="stat-lbl">אשכולות אפלה</div></div>
     <div class="stat-box"><div class="stat-val">${operational_summary.rssi_avg}</div><div class="stat-lbl">RSSI ממוצע</div></div>
     <div class="stat-box"><div class="stat-val">${operational_summary.rssi_min}</div><div class="stat-lbl">RSSI מינ'</div></div>
@@ -107,6 +123,20 @@ function buildReportHTML(r: CoverageReport): string {
   const recsSectionHTML = `
 <h2>המלצות מבצעיות</h2>
 <ul style="padding-right:20px;font-size:13px;line-height:1.7;">${recItems}</ul>`;
+
+  // ── Data quality section ───────────────────────────────────────────────────
+  const dqSim = demStatus(dq?.dem_source) === "simulated";
+  const dqSectionHTML = `
+<h2 style="background:${dqSim ? "#c77700" : "#3b82f6"};">איכות נתונים – Data Quality</h2>
+${dqSim ? `<p style="color:#856404;background:#fff3cd;border:1px solid #ffc107;padding:10px;border-radius:4px;">⚠ התוצאה מבוססת על טרן מדומה (סימולציה) ולא על נתוני גובה אמיתיים (DEM) — יש להתייחס לערכים כהערכה בלבד.</p>` : ""}
+<table>
+  <tr><th>מקור DEM</th><td>${esc(dq?.dem_source ?? DASH)} (${esc(demLabel(dq?.dem_source))})</td>
+      <th>פיקסלים תקינים</th><td>${fmtPct(dq?.dem_valid_pct)}</td></tr>
+  <tr><th>רזולוציית DEM</th><td>${dq?.dem_m_per_px != null ? `${fmtNum(dq.dem_m_per_px, 1)} מ'/פיקסל` : DASH}</td>
+      <th>רשת ניתוח</th><td>${dq?.resolution != null ? `${dq.resolution}×${dq.resolution}` : DASH}</td></tr>
+  <tr><th>שיטת עקיפה</th><td>${esc(dq?.diffraction_method ?? DASH)}</td>
+      <th>ציון סיכון</th><td>${riskScoreTxt}${risk?.score != null ? " / 4" : ""}</td></tr>
+</table>`;
 
   return `<!DOCTYPE html>
 <html dir="rtl" lang="he">
@@ -143,19 +173,23 @@ ${execSummaryHTML}
 ${deadZonesSectionHTML}
 ${recsSectionHTML}
 
+${dqSectionHTML}
+
 <h2>1. פרטי הניתוח</h2>
 <table>
   <tr><th>שם אתר</th><td>${meta.site_name}</td><th>מזהה תוצאה</th><td>#${meta.result_id}</td></tr>
   <tr><th>מיקום אנטנה</th><td>${meta.site_lat.toFixed(5)}°N, ${meta.site_lon.toFixed(5)}°E</td><th>גובה אנטנה</th><td>${meta.ant_height} מ'</td></tr>
   <tr><th>תדר</th><td>${meta.frequency} MHz</td><th>הספק שידור</th><td>${meta.tx_power} dBm</td></tr>
-  <tr><th>סף קבלה</th><td>${meta.rx_threshold} dBm</td><th>רדיוס מקסימלי</th><td>${meta.max_radius} ק"מ</td></tr>
+  <tr><th>סף קבלה</th><td>${legacy
+    ? `${esc(fmtDbm(meta.rx_threshold))} <span style="color:#888;font-size:11px">(ערך נוכחי של האתר – תוצאה ישנה, הסף בעת הניתוח לא ידוע)</span>`
+    : esc(fmtDbm(reportThreshold))}</td><th>רדיוס מקסימלי</th><td>${meta.max_radius} ק"מ</td></tr>
   <tr><th>מודל חישוב</th><td>${MODE_LABEL[meta.mode] ?? meta.mode} (${meta.mode})</td><th>תאריך ניתוח</th><td>${new Date(meta.analysis_date).toLocaleString("he-IL")}</td></tr>
   <tr><th>זמן חישוב</th><td>${meta.duration_sec}s</td><th></th><td></td></tr>
 </table>
 
 <h2>2. סיכום מאקרו</h2>
 <div class="stat-grid">
-  <div class="stat-box"><div class="stat-val">${macro.covered_pct}%</div><div class="stat-lbl">שטח מכוסה</div></div>
+  <div class="stat-box"><div class="stat-val">${fmtPct(macro.covered_pct)}</div><div class="stat-lbl">${coveredLbl}</div></div>
   <div class="stat-box"><div class="stat-val">${macro.rssi_avg}</div><div class="stat-lbl">RSSI ממוצע (dBm)</div></div>
   <div class="stat-box"><div class="stat-val">${macro.rssi_max}</div><div class="stat-lbl">RSSI מקסימום</div></div>
   <div class="stat-box"><div class="stat-val">${macro.rssi_min}</div><div class="stat-lbl">RSSI מינימום</div></div>
@@ -192,11 +226,12 @@ ${recsSectionHTML}
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function HistoryPanel() {
-  const { setCoverageResults, setBbox, setActiveTab,
+  const { setCoverageResults, setBbox, setActiveTab, addMapLayer,
           crossSectionResult, setCrossSectionResult, setRouteWaypoints } = useStore();
   const qc = useQueryClient();
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [loadingId, setLoadingId]     = useState<number | null>(null);
+  const [geojsonId, setGeojsonId]     = useState<number | null>(null);
 
   const { data: history = [], isLoading } = useQuery<HistoryItem[]>({
     queryKey: ["coverage-history"],
@@ -217,6 +252,8 @@ export default function HistoryPanel() {
     try {
       const result = await coverageApi.getResult(item.id);
       setCoverageResults([result]);
+      // Map overlay is driven by the layer manager (PNG of the stored bbox)
+      addMapLayer(layerFromResult(result, item.site_name));
       setBbox({
         sw_lat: item.poly_sw_lat, sw_lon: item.poly_sw_lon,
         ne_lat: item.poly_ne_lat, ne_lon: item.poly_ne_lon,
@@ -236,17 +273,26 @@ export default function HistoryPanel() {
       const report = await coverageApi.getReport(item.id);
       const html   = buildReportHTML(report);
       const blob   = new Blob([html], { type: "text/html;charset=utf-8" });
-      const url    = URL.createObjectURL(blob);
-      const a      = document.createElement("a");
-      a.href       = url;
-      a.download   = `coverage_report_${item.site_name}_${item.id}.html`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, `coverage_report_${item.site_name}_${item.id}.html`);
       notify("✅ הדוח הורד בהצלחה");
     } catch {
       notify("⚠ שגיאה בייצוא הדוח");
     } finally {
       setExportingId(null);
+    }
+  }
+
+  async function handleGeojson(item: HistoryItem) {
+    setGeojsonId(item.id);
+    try {
+      await coverageApi.downloadResultGeojson(item.id);
+      notify("✅ קובץ GeoJSON הורד");
+    } catch (err: any) {
+      notify(err?.response?.status === 404
+        ? "⚠ GeoJSON אינו זמין לתוצאה זו"
+        : "⚠ שגיאה בהורדת GeoJSON");
+    } finally {
+      setGeojsonId(null);
     }
   }
 
@@ -282,15 +328,36 @@ export default function HistoryPanel() {
         <div key={item.id} className={styles.card}>
           <div className={styles.cardTop}>
             <span className={styles.siteName}>{item.site_name}</span>
-            <span className={`${styles.modeBadge} ${item.mode === "DSM" ? styles.dsm : ""}`}>
-              {item.mode}
+            <span className={styles.badges}>
+              {demStatus(item.dem_source) !== "unknown" && (
+                <span
+                  className={`${styles.demBadge} ${demStatus(item.dem_source) === "simulated" ? styles.demSim : styles.demReal}`}
+                  title={demStatus(item.dem_source) === "simulated"
+                    ? "מבוסס על טרן מדומה ולא על DEM אמיתי"
+                    : `DEM אמיתי${item.dem_valid_pct != null ? ` (${fmtPct(item.dem_valid_pct, 0)} תקין)` : ""}`}
+                >
+                  {demStatus(item.dem_source) === "simulated" ? "⚠ " : ""}{demLabel(item.dem_source)}
+                </span>
+              )}
+              <span className={`${styles.modeBadge} ${item.mode === "DSM" ? styles.dsm : ""}`}>
+                {item.mode}
+              </span>
             </span>
           </div>
 
           <div className={styles.cardMeta}>
             <span>📅 {formatDate(item.created_at)}</span>
-            <span>📶 {item.covered_pct}% כיסוי</span>
-            <span>⚡ {item.rssi_avg} dBm ממוצע</span>
+            <span title={isLegacyThreshold(item.threshold_dbm)
+              ? "תוצאה ישנה – האחוז מתייחס לאות כלשהו (> −110 dBm)"
+              : "אחוז השטח מעל סף הקליטה בעת הניתוח"}>
+              📶 <bdi>{fmtCoveredVsThreshold(item.covered_pct, item.threshold_dbm)}</bdi>
+              {!isLegacyThreshold(item.threshold_dbm) && " כיסוי"}
+            </span>
+            <span title="אחוז השטח עם אות כלשהו (> −110 dBm)">
+              〰 {fmtPct(item.covered_pct_any_signal)} אות כלשהו
+            </span>
+            <span>⚡ <bdi>{fmtDbm(item.rssi_avg, 1)}</bdi> ממוצע</span>
+            {item.resolution != null && <span>▦ {item.resolution}×{item.resolution}</span>}
           </div>
 
           <div className={styles.actions}>
@@ -307,6 +374,14 @@ export default function HistoryPanel() {
               disabled={exportingId === item.id}
             >
               {exportingId === item.id ? "מייצא..." : "📄 ייצא דוח"}
+            </button>
+            <button
+              className={`${styles.btn} ${styles.geojson}`}
+              onClick={() => handleGeojson(item)}
+              disabled={geojsonId === item.id}
+              title="הורד את רשת הכיסוי כקובץ GeoJSON"
+            >
+              {geojsonId === item.id ? "מוריד..." : "⬇ GeoJSON"}
             </button>
             <button
               className={`${styles.btn} ${styles.del}`}

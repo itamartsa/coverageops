@@ -74,3 +74,14 @@
   cursor: pointer; transition: background .15s; text-align: center;
 }
 .clearCrossSection:hover { background: rgba(255,59,92,0.18); }
+
+.badges { display: inline-flex; align-items: center; gap: 5px; }
+.demBadge {
+  font-size: 9px; font-weight: 700; letter-spacing: .5px;
+  padding: 2px 6px; border-radius: 2px; border: 1px solid var(--border);
+}
+.demReal { border-color: var(--accent2); color: var(--accent2); background: rgba(0,255,136,0.08); }
+.demSim  { border-color: var(--warn);    color: var(--warn);    background: rgba(255,179,71,0.12); }
+
+.geojson { border-color: var(--warn); color: var(--warn); }
+.geojson:hover:not(:disabled) { background: rgba(255,179,71,0.1); }

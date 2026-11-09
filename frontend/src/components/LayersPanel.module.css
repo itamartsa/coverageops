@@ -128,3 +128,10 @@
   background: var(--bg2); border: 1px dashed var(--border);
   padding: 12px; text-align: center;
 }
+
+.simTag {
+  font-size: 9px; font-weight: 700; letter-spacing: .5px;
+  padding: 0 5px; border-radius: 2px;
+  color: var(--warn); border: 1px solid var(--warn);
+  background: rgba(255,179,71,0.12);
+}

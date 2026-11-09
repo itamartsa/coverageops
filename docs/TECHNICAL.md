@@ -21,11 +21,15 @@ CoverageOps היא מערכת ניתוח כיסוי רדיו מבצעי המור
 │  │ :3000    │    │   :8000      │    │  :5432        │  │
 │  └──────────┘    └──────┬───────┘    └───────────────┘  │
 │                         │                               │
-│                    ┌────┴──────────────────────┐        │
-│                    │  /data/results  (GeoJSON) │        │
-│                    └───────────────────────────┘        │
+│                         ▼                               │
+│              Terrarium DEM tiles (S3, HTTPS)            │
+│              LRU cache בזיכרון (TILE_CACHE_SIZE)         │
 └─────────────────────────────────────────────────────────┘
 ```
+
+תוצאות ניתוח נשמרות כ**רסטר RSSI מקודד** בעמודה `coverage_results.rssi_raster`
+(ולא כקובצי GeoJSON). PNG, GeoJSON ודוח נגזרים מהרסטר לפי דרישה.
+`/data/results` משמש רק לשורות ישנות (legacy) שנשמרו כקובץ GeoJSON.
 
 ---
 
@@ -39,6 +43,7 @@ coverageops/
 │   │   ├── core/
 │   │   │   ├── config.py        # Pydantic settings (env-driven)
 │   │   │   ├── database.py      # SQLAlchemy engine + session
+│   │   │   ├── migrations.py    # מיגרציות הוספת עמודות (idempotent) באתחול
 │   │   │   └── security.py      # JWT, bcrypt, role-based deps
 │   │   ├── models/
 │   │   │   └── user.py          # ORM: User, Site, CoverageResult, ActivityLog
@@ -48,13 +53,18 @@ coverageops/
 │   │   │   ├── sites.py         # /api/sites/* — site management
 │   │   │   └── coverage.py      # /api/coverage/* — analysis engine
 │   │   └── services/
-│   │       ├── coverage_engine.py   # RF propagation model
-│   │       ├── elevation.py         # Terrarium tile elevation lookup
+│   │       ├── coverage_engine.py   # RF propagation model (Deygout, k=4/3), raster helpers
+│   │       ├── terrain.py           # Terrarium tiles → elevation grid (NaN = missing)
+│   │       ├── elevation.py         # Point elevation lookup (None on failure)
+│   │       ├── risk.py              # דירוג סיכון + המלצות מבצעיות (מקור אמת יחיד)
 │   │       └── report_generator.py  # Word (.docx) report generation
 │   ├── scripts/
 │   │   └── seed.py              # Idempotent DB seeder (dev users)
 │   ├── tests/
-│   │   └── test_coverage.py     # Unit + integration tests
+│   │   ├── test_coverage.py     # מנוע הפצה
+│   │   ├── test_terrain.py      # שכבת אריחי DEM
+│   │   ├── test_risk.py         # דירוג סיכון והמלצות
+│   │   └── test_api_coverage.py # API end-to-end (SQLite + DEM סינתטי)
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/
@@ -111,7 +121,7 @@ coverageops/
 | name        | VARCHAR(128)|                               |
 | lat, lon    | FLOAT       | WGS-84                        |
 | ant_height  | FLOAT       | metres AGL, default 6.0       |
-| elevation_m | FLOAT       | metres ASL, auto-fetched       |
+| elevation_m | FLOAT       | metres ASL, auto-fetched; NULL = לא ידוע (DEM לא זמין) |
 | frequency   | INTEGER     | MHz: 700/850/900/1800/2100/2600/3500 |
 | tx_power    | FLOAT       | dBm EIRP, default 43.0        |
 | rx_threshold| FLOAT       | dBm, default −90.0            |
@@ -129,11 +139,28 @@ coverageops/
 | mode         | ENUM       | DTM / DSM                    |
 | poly_sw_lat/lon | FLOAT   | bounding box SW corner       |
 | poly_ne_lat/lon | FLOAT   | bounding box NE corner       |
-| covered_pct  | FLOAT      | % of bbox with signal        |
-| rssi_avg/max/min | FLOAT  | aggregate RSSI stats (dBm)   |
-| geojson_path | VARCHAR    | path to GeoJSON file on disk |
-| duration_sec | FLOAT      | computation time             |
+| covered_pct  | FLOAT      | % תאים ברדיוס עם RSSI ≥ threshold_dbm (סף הקבלה). בשורות ישנות: % עם "כל אות" |
+| covered_pct_any_signal | FLOAT | % תאים עם RSSI > −110 dBm (המשמעות הישנה) |
+| weak_pct     | FLOAT      | % תאים ברמות weak + marginal |
+| threshold_dbm| FLOAT      | סף הקבלה ששימש בחישוב (rx_threshold של האתר) |
+| rssi_avg/max/min | FLOAT  | סטטיסטיקת RSSI על תאים עם אות (> −110 dBm) |
+| rssi_min_all | FLOAT      | RSSI מינימלי על **כל** התאים ברדיוס (כולל ללא אות) — קלט לדירוג הסיכון; בשורות ישנות NULL → נעשה שימוש ב-rssi_min |
+| rssi_raster  | BYTEA      | (deferred — לא נטען ברשימות; `has_raster` מחושב ב-SQL) רסטר RSSI מקודד (`encode_rssi_grid`): int16 ברזולוציית 0.1 dB, zlib; NaN = מחוץ לרדיוס; שורה 0 = צפון |
+| resolution   | INTEGER    | תאים לציר של הרסטר |
+| dem_source   | VARCHAR(32)| `terrarium` (DEM אמיתי) / `none` (סימולציה) |
+| dem_valid_pct| FLOAT      | % תאי DEM תקינים (לא NaN) **בתא השטח של המשתמש** (לא בשטח המורחב) |
+| dem_m_per_px | FLOAT      | רזולוציית ה-DEM המקורית (מ'/פיקסל) |
+| model        | VARCHAR(128)| תיאור מודל ההפצה כפי שהמנוע החזיר |
+| geojson_path | VARCHAR    | legacy בלבד – קובץ GeoJSON של שורות ישנות |
+| duration_sec | FLOAT      | זמן חישוב כולל (כולל שליפת DEM) |
 | created_at   | DATETIME   |                              |
+
+**מיגרציה:** `Base.metadata.create_all` אינו מוסיף עמודות לטבלה קיימת.
+`app/core/migrations.py → run_startup_migrations(engine)` רץ באתחול האפליקציה (lifespan)
+ומוסיף כל עמודה חסרה (`ALTER TABLE … ADD COLUMN IF NOT EXISTS` ב-PostgreSQL;
+בדיקת inspector + `ADD COLUMN` ב-SQLite). שורות ישנות נשארות עם NULL בעמודות החדשות.
+האתחול (create_all + מיגרציות) רץ ב-startup ולא בזמן import, כך שניתן לייבא את
+`app.main` גם ללא מסד נתונים זמין.
 
 ### activity_log
 אוגר כניסות מוצלחות ונכשלות. לא נחשף ב-API נוכחי.
@@ -175,12 +202,63 @@ coverageops/
 | POST   | /analyze                    | ADMIN/OPERATOR | הרצת ניתוח כיסוי שטחי           |
 | GET    | /                           | JWT            | 100 ניתוחים אחרונים (היסטוריה)  |
 | GET    | /history/{site_id}          | JWT            | 20 ניתוחים אחרונים לאתר         |
-| GET    | /result/{id}                | JWT            | תוצאה + GeoJSON מוטמע           |
+| GET    | /result/{id}                | JWT            | סטטיסטיקה + איכות נתונים (ללא GeoJSON) |
+| GET    | /result/{id}/png            | JWT            | שכבת PNG מהרסטר (`width`,`height`) – תמיד על ה-bbox השמור |
+| GET    | /result/{id}/geojson        | JWT            | הורדת GeoJSON (נבנה לפי דרישה, `Content-Disposition`) |
 | DELETE | /result/{id}                | ADMIN/OPERATOR | מחיקת תוצאה                     |
-| GET    | /result/{id}/report         | JWT            | דוח מלא עם סיכון + המלצות       |
+| GET    | /result/{id}/report         | JWT            | דוח מלא: סיכון, אשכולות אפלה, איכות נתונים, המלצות |
 | POST   | /cross-section              | ADMIN/OPERATOR | ניתוח חתך רדיו (JSON)            |
 | POST   | /cross-section/docx         | ADMIN/OPERATOR | ניתוח חתך רדיו (Word)            |
-| GET    | /topo-overlay               | ללא            | שכבת גבהים PNG דינמית           |
+| GET    | /point-elevation            | JWT            | גובה נקודה (`elevation_m: null` אם אין נתונים) |
+| GET    | /topo-overlay               | JWT            | שכבת גבהים PNG (שקוף היכן שאין DEM) |
+
+**מגבלות שטח:** צלע bbox מעל `MAX_BBOX_SPAN_KM` (400 ק"מ) → HTTP 400 (`/analyze`, `/topo-overlay`).
+כאשר שכבת ה-DEM חורגת מתקציב האריחים/פיקסלים (`DemAreaTooLarge`) → HTTP 413 עם הודעה בעברית
+(`/analyze`, `/cross-section`, `/cross-section/docx`, `/topo-overlay`).
+
+**גובה האתר:** אם `sites.elevation_m` הוא NULL, הגובה נדגם מגריד ה-DEM של הניתוח (בילינארי,
+מרכזי תאים). אם אין DEM במיקום האתר — המשדר מוצב ב-0 מ' ומתווספת אזהרה בעברית לתגובת
+`/analyze` / `/cross-section` (האזהרה אינה נשמרת ב-DB).
+
+### `POST /analyze` — פרטים
+
+- `resolution` אופציונלי. ללא ערך → **רזולוציה אדפטיבית**:
+  `R = clamp(round(max_span_m / max(TARGET_CELL_M, dem_m_per_px)), MIN_GRID_RESOLUTION, MAX_GRID_RESOLUTION)`
+  (תא לא יהיה עדין מרזולוציית ה-DEM — אין "פירוט מזויף"). ערך מפורש נשמר (20–500).
+- **אתר מחוץ לתא השטח:** החישוב רץ על bbox מורחב שמכיל את האתר + 0.5 ק"מ, באותו גודל תא
+  ובהתאמה מדויקת לתאי ה-bbox של המשתמש; לאחר מכן הרסטר נחתך חזרה ל-bbox של המשתמש.
+  כך חסימות טופוגרפיות בין האתר לתא השטח נכללות. ההרחבה מוגבלת ל-`MAX_GRID_RESOLUTION`
+  תאים לציר; כשההגבלה חלה מוחזרת אזהרה. `dem_extended` בתגובה מציין אם בוצעה הרחבה.
+- הסטטיסטיקה מחושבת על הרסטר החתוך (שטח המשתמש בלבד).
+- `risk_level`/`risk_score` מחושבים ב-`risk.assess_risk` עם `rssi_min_all`.
+- `warnings` (עברית): ללא DEM (`dem_source != "terrarium"`), DEM חלקי (`dem_valid_pct < 95`),
+  הרחבה חלקית, ושורה ישנה (legacy).
+
+### `POST /cross-section`
+
+`covered_pct` = % נקודות לאורך הציר עם RSSI ≥ `threshold_dbm` (סף הקבלה); אזורים מתים מוגדרים
+לפי אותו כלל. `covered_pct_any_signal` = % נקודות עם אות > −110 dBm. בנוסף: `risk_score`,
+`dem_source`, `dem_valid_pct`, `dem_m_per_px`, `warnings`. בדוח ה-Word סימון ✓/✗ לכל נקודה
+מבוסס על הדגל `covered` של המנוע (אותו כלל של אזורים מתים). `rssi_min_all` מוחזר גם כאן.
+
+### `GET /result/{id}/png`
+
+הפרמטרים `sw_lat…ne_lon` נשמרו לתאימות לאחור אך **מתעלמים מהם** עבור שורות עם רסטר —
+התמונה תמיד מכסה את ה-bbox השמור של התוצאה. בשורות ישנות (GeoJSON בלבד) נעשה שימוש
+ברנדרר הישן, עם ה-bbox שהועבר או ה-bbox השמור.
+
+### `GET /result/{id}/report`
+
+- התפלגות רמות מ-`level_distribution_from_grid` (כולל `none`, אחוזים מתאים ברדיוס).
+- אשכולות אפלה: רכיבים קשירים (8-שכנים, BFS ב-O(תאים)) של תאים מתחת לסף; 10 הגדולים
+  עם `centroid_lat/lon`, `cell_count`, `area_km2`, `rssi_avg`, `rssi_min`, `severity`
+  (`none` = יש תא ללא אות כלל, `marginal` = אות קיים אך מתחת לסף).
+- סיכון/סיכום/המלצות (קלט RSSI מינימלי = `rssi_min_all`, ובשורות ישנות `rssi_min`): `risk.assess_risk`, `risk.operational_summary`,
+  `risk.build_area_recommendations` — ללא נוסחאות כפולות ב-API.
+- `propagation.model` מהעמודה `model`; `height_gain_db` = `effective_height_gain_db(ant_height, has_dem)`.
+- `data_quality`: `dem_source, dem_valid_pct, dem_m_per_px, resolution, diffraction_method`.
+- **שורות ישנות:** קובץ ה-GeoJSON מומר חזרה לגריד (תאי `none` לא נשמרו בעבר ולכן
+  לא ידועים), `covered_pct` הוא הערך הישן השמור, ואזהרת legacy מופיעה ראשונה בהמלצות.
 
 ---
 
@@ -189,24 +267,36 @@ coverageops/
 ### מודל הפצה
 
 ```
-RSSI (dBm) = Tx_power − FSPL(d, f) − TerrainLoss + HeightGain
+RSSI (dBm) = Tx_power − FSPL(d, f) − DiffractionLoss − ClutterLoss + HeightGain
 ```
 
-**FSPL** (Free Space Path Loss):
+**FSPL** (Free Space Path Loss, ITU-R P.525):
 ```
 FSPL = 20·log₁₀(d_m) + 20·log₁₀(f_Hz) − 147.55
 ```
 
-**HeightGain**:
-```
-HeightGain = 20·log₁₀(h_ant / 1.5)
-```
+**DiffractionLoss** — ITU-R P.526-15 §4.5, **Deygout** רב-שפות (עד 3 שפות: השפה הראשית +
+שפה דומיננטית בכל צד), על פני פרופיל של 24 נקודות. כל נקודה מוגבהת בבליטת כדור הארץ
+`d1·d2 / (2·k·R_e)` עם **k = 4/3**. ניתן לבחור `diffraction_method="single"` (שפה אחת).
 
-**TerrainLoss** (סימולציה נוכחית):
-- DTM: 0–15 dB אקראי דטרמיניסטי (seed לפי מיקום האתר)
-- DSM: DTM + 0–20 dB נוסף לחסימות עירוניות
+**ClutterLoss** — במצב DSM בלבד: 9 dB סטטיסטי.
 
-> לדיוק מבצעי: יש להחליף ב-SRTM DEM + מודל Longley-Rice/ITM
+**HeightGain** — עם DEM אמיתי: `min(20·log₁₀(h/1.5), 6 dB)` (גובה האנטנה כבר נכלל בגיאומטריית
+קו הראייה); ללא DEM: `20·log₁₀(h/1.5)` מלא.
+
+### נתוני גבהים (terrain.py)
+
+- אריחי Terrarium מפוענחים למטרים **לפני** דגימה מחדש; זום נבחר אוטומטית (8–12) לפי תקציב
+  `MAX_DEM_TILES`; הורדה מקבילית עם מטמון LRU.
+- אריח שנכשל → **NaN** בגריד (לא −32768, לא אפסים). במנוע, NaN = שטח לא ידוע ומוחלף
+  באינטרפולציה לינארית של הקרקע בין המשדר למקלט.
+- אם אף אריח לא זמין → `None`, והמנוע עובר לסימולציה פסאודו-אקראית המסומנת
+  `dem_source="none"` (ומלווה באזהרה בכל התגובות).
+
+### אחוז כיסוי (covered_pct)
+
+`covered_pct` = אחוז התאים בתוך רדיוס הניתוח שבהם **RSSI ≥ סף הקבלה של האתר** (`rx_threshold`).
+`covered_pct_any_signal` = אחוז התאים עם אות כלשהו (> −110 dBm) — המשמעות הישנה של covered_pct.
 
 ### דירוג RSSI
 
@@ -217,13 +307,24 @@ HeightGain = 20·log₁₀(h_ant / 1.5)
 | medium  | −80 עד −90        |
 | weak    | −90 עד −100       |
 | marginal| −100 עד −110      |
-| none    | < −110            |
+| none    | ≤ −110           |
+
+### דירוג סיכון (risk.py)
+
+מקור אמת יחיד לניתוח שטחי ולחתך. רמה עולה ברגע שקריטריון אחד מתקיים:
+
+| רמה      | covered_pct | אזור מת ארוך (ק"מ) | weak_pct | rssi_min (dBm) |
+|----------|-------------|--------------------|----------|----------------|
+| CRITICAL | < 50        | > 3                | > 30     | < −115         |
+| HIGH     | < 70        | > 2                | > 20     | < −110         |
+| MEDIUM   | < 85        | > 1                | > 10     | < −105         |
+| LOW      | אחרת        |                    |          |                |
 
 ### רזולוציית גריד
 
-- ברירת מחדל: 300×300 = 90,000 תאים
-- מקסימום: 500×500 = 250,000 תאים
-- ניתן לשינוי ב-`config.py` → `COVERAGE_GRID_RESOLUTION`
+- אדפטיבית כברירת מחדל: יעד `TARGET_CELL_M` (40 מ') לתא, לא עדין מה-DEM,
+  בטווח `MIN_GRID_RESOLUTION`–`MAX_GRID_RESOLUTION` (60–500).
+- ערך מפורש מהלקוח: 20–500.
 
 ---
 
@@ -237,8 +338,18 @@ HeightGain = 20·log₁₀(h_ant / 1.5)
 | ACCESS_TOKEN_EXPIRE_MINUTES | 480                               | תוקף טוקן (8 שעות)        |
 | CORS_ORIGINS             | localhost:3000, localhost:5173       | מקורות CORS מורשים        |
 | MAX_ANALYSIS_RADIUS_KM   | 350.0                                | גבול רדיוס ניתוח          |
-| COVERAGE_GRID_RESOLUTION | 300                                  | נקודות גריד לציר          |
-| RESULTS_DIR              | /data/results                        | תיקיית GeoJSON            |
+| COVERAGE_GRID_RESOLUTION | 300                                  | ברירת מחדל של המנוע (קריאה ישירה) |
+| TARGET_CELL_M            | 40.0                                 | גודל תא יעד לרזולוציה אדפטיבית (מ') |
+| MIN_GRID_RESOLUTION      | 60                                   | מינימום תאים לציר (אדפטיבי) |
+| MAX_GRID_RESOLUTION      | 500                                  | מקסימום תאים לציר (גם להרחבת bbox לאתר) |
+| TILE_CACHE_SIZE          | 512                                  | גודל מטמון אריחי DEM (~256KB לאריח) |
+| MAX_DEM_TILES            | 64                                   | תקציב אריחים לגריד גבהים   |
+| TILE_FETCH_WORKERS       | 8                                    | הורדות מקביליות            |
+| TILE_FETCH_TIMEOUT_S     | 4.0                                  | timeout לאריח (שניות)      |
+| TILE_FETCH_DEADLINE_S    | 20.0                                 | זמן כולל מרבי לשליפת גריד  |
+| MAX_DEM_PIXELS           | 100000000                            | תקרת פיקסלים לפסיפס/פלט DEM (→ 413) |
+| MAX_BBOX_SPAN_KM         | 400.0                                | אורך צלע מרבי של תא שטח (→ 400) |
+| RESULTS_DIR              | /data/results                        | קובצי GeoJSON ישנים (legacy) |
 
 ---
 
@@ -282,20 +393,18 @@ docker compose exec backend pytest tests/ -v
 ```
 
 הבדיקות מכסות:
-- חישוב FSPL
-- מרחק Haversine
-- דירוג RSSI
-- גובה אנטנה
-- ניתוח כיסוי שלם (DTM + DSM)
+- חישוב FSPL, Haversine, דירוג RSSI, גובה אנטנה, Deygout ובליטת כדור הארץ
+- ניתוח כיסוי שלם (DTM + DSM), קידוד/פענוח רסטר
+- שכבת אריחי DEM (NaN, מטמון, תקציב אריחים)
+- דירוג סיכון והמלצות
+- API מקצה לקצה (`test_api_coverage.py`): SQLite בזיכרון + DEM סינתטי —
+  שמירת רסטר, רזולוציה אדפטיבית, PNG/GeoJSON/דוח, אתר מחוץ ל-bbox (רכס בין האתר לשטח
+  מוריד RSSI), DEM חסר → אזהרה, שורות legacy, מיגרציות
 
 ---
 
-## שדרוג לנתוני טרן אמיתיים
+## נתוני טרן
 
-כרגע המערכת משתמשת בסימולציה דטרמיניסטית (pseudo-terrain).
-להחלפה בנתוני SRTM אמיתיים:
-
-1. הורד tiles של SRTM ל-`/data/srtm`
-2. ב-`coverage_engine.py` החלף את `terrain_loss_db()` בחישוב LOS אמיתי
-   (Knife-Edge Diffraction / ITM Longley-Rice)
-3. הגדר `SRTM_DATA_DIR` בקובץ הסביבה
+המערכת משתמשת בנתוני גבהים אמיתיים (Terrarium, ~38 מ'/פיקסל בזום 12) ובמודל עקיפה
+ITU-R P.526 Deygout. כשהנתונים אינם זמינים התוצאה מסומנת בבירור (`dem_source="none"`
++ אזהרה) ואין להסתמך עליה מבצעית.

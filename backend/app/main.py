@@ -2,28 +2,30 @@
 CoverageOps – Backend API
 FastAPI + PostgreSQL + PostGIS
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from sqlalchemy import text
-
 from app.core.config import settings
 from app.core.database import engine, Base
+from app.core.migrations import run_startup_migrations
 from app.api import auth, sites, coverage, users
 
-# ── Create tables on startup ─────────────────────────────────────────────────
-Base.metadata.create_all(bind=engine)
+def init_db() -> None:
+    """Create tables, then add columns introduced after first deployment."""
+    Base.metadata.create_all(bind=engine)
+    run_startup_migrations(engine)
 
-# ── Additive migrations (idempotent) ─────────────────────────────────────────
-with engine.connect() as _conn:
-    try:
-        _conn.execute(text(
-            "ALTER TABLE sites ADD COLUMN IF NOT EXISTS elevation_m FLOAT DEFAULT 0"
-        ))
-        _conn.commit()
-    except Exception:
-        pass
+
+# DB initialisation runs at application startup (not at import time), so the
+# module can be imported – e.g. by tests – without a reachable database.
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
 
 app = FastAPI(
     title="CoverageOps API",
@@ -31,6 +33,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -41,6 +44,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],   # lets the SPA read download filenames
 )
 
 # ── Routers ───────────────────────────────────────────────────────────────────

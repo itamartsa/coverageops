@@ -32,6 +32,8 @@ export interface MapLayer {
   bbox?:       BBox;
   mode?:       string;
   coveredPct?: number;
+  thresholdDbm?: number | null;   // threshold_dbm returned with the result; null = legacy (never the site's current rx_threshold)
+  demSource?:    string | null;   // "terrarium" = real DEM; anything else = simulated
   siteName?:   string;
   createdAt?:  string;
 }
@@ -165,7 +167,10 @@ export const useStore = create<AppState>()(
 
       addMapLayer: (layer) =>
         set((s) => ({
-          mapLayers: [...s.mapLayers, layer],
+          // Update an existing layer with the same id (e.g. re-loading a result), keeping a user rename
+          mapLayers: s.mapLayers.some((l) => l.id === layer.id)
+            ? s.mapLayers.map((l) => (l.id === layer.id ? { ...l, ...layer, name: l.name } : l))
+            : [...s.mapLayers, layer],
         })),
 
       removeMapLayer: (id) =>

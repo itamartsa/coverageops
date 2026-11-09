@@ -73,7 +73,7 @@ def _rtl_para(para) -> None:
 
 
 def _rtl_table(table) -> None:
-    tbl_pr = table._tbl.get_or_add_tblPr()
+    tbl_pr = table._tbl.tblPr   # CT_Tbl always has exactly one tblPr
     bidi   = OxmlElement("w:bidiVisual")
     bidi.set(qn("w:val"), "1")
     tbl_pr.insert(0, bidi)
@@ -146,6 +146,26 @@ def _add_stat_box(doc: Document, label: str, value: str,
     doc.add_paragraph()
 
 
+def _dem_quality_text(stats: CrossSectionStats, site_params: dict) -> str:
+    """Human-readable DEM provenance / completeness line."""
+    src = getattr(stats, "dem_source", None)
+    if src != "terrarium":
+        return "ללא נתוני טופוגרפיה – מודל סימולציה בלבד (אין להסתמך לתכנון מבצעי)"
+    txt = f"Terrarium – {getattr(stats, 'dem_valid_pct', 0.0):.1f}% תקין"
+    m_px = site_params.get("dem_m_per_px")
+    if m_px:
+        txt += f", רזולוציה ~{m_px:g} מ'/פיקסל"
+    return txt
+
+
+def _threshold_dbm(stats: CrossSectionStats, site_params: dict) -> float:
+    """rx_threshold used for covered_pct / dead zones (site_params first, then stats)."""
+    thr = site_params.get("rx_threshold")
+    if thr is None:
+        thr = getattr(stats, "threshold_dbm", None)
+    return float(thr) if thr is not None else -110.0
+
+
 # ── Main generator ────────────────────────────────────────────────────────────
 def generate_cross_section_docx(
     stats: CrossSectionStats,
@@ -189,6 +209,8 @@ def generate_cross_section_docx(
     mr.font.color.rgb = RGBColor(0x6B, 0x72, 0x80)
     doc.add_paragraph()
 
+    threshold = _threshold_dbm(stats, site_params)
+
     # ── Section 1: Analysis details ──────────────────────────────────────────
     _add_heading(doc, "1. פרטי הניתוח")
     _add_kv_table(doc, [
@@ -204,6 +226,11 @@ def generate_cross_section_docx(
         ("נקודות ניתוח",        str(len(stats.points))),
         ("נקודות ציר (waypoints)", str(len(stats.waypoints))),
         ("זמן חישוב",           f"{stats.duration_sec}s"),
+        ("נתוני גבהים (DEM)",   _dem_quality_text(stats, site_params)),
+        ("ציון סיכון",          f"{RISK_HE.get(stats.risk_level, stats.risk_level)} "
+                                f"({getattr(stats, 'risk_score', '-')}/4)"),
+        ("כיסוי מעל סף הקבלה",  f"{stats.covered_pct}% (סף {threshold} dBm)"),
+        ("כיסוי – אות כלשהו",   f"{getattr(stats, 'covered_pct_any_signal', '-')}% (מעל ‎-110 dBm)"),
     ])
 
     # ── Section 2: Executive summary ─────────────────────────────────────────
@@ -220,7 +247,7 @@ def generate_cross_section_docx(
     # Key findings
     _add_heading(doc, "ממצאים עיקריים", level=2)
     findings = [
-        f"אחוז כיסוי כולל: {stats.covered_pct}% מהציר",
+        f"אחוז כיסוי (RSSI ≥ {threshold} dBm): {stats.covered_pct}% מהציר",
         f"RSSI ממוצע: {stats.rssi_avg} dBm  |  מינ': {stats.rssi_min} dBm  |  מקס': {stats.rssi_max} dBm",
         f"זוהו {len(stats.dead_zones)} אזורי מתים",
     ]
@@ -262,15 +289,17 @@ def generate_cross_section_docx(
         _cell_text(hdr_row.cells[i], h, bold=True, size_pt=9, color=WHITE,
                    align=WD_ALIGN_PARAGRAPH.CENTER)
 
-    # Data rows
+    # Data rows — status (✓/✗) uses the engine's per-point flag (unrounded
+    # rssi >= threshold), i.e. exactly the dead-zone rule
     for ri, pt in enumerate(display_pts, start=1):
         row     = tbl.rows[ri]
         fill    = LEVEL_FILL.get(pt.level, "CCCCCC")
         txt_col = BLACK if pt.level in LEVEL_TEXT_DARK else (
                   BLACK if pt.level == "none" else WHITE)
-        _shade_cell(row.cells[0], fill)
+        covered = getattr(pt, "covered", pt.rssi >= threshold)
+        _shade_cell(row.cells[0], "00B464" if covered else "CC0000")
         _shade_cell(row.cells[1], fill)
-        status_icon = "✓" if pt.level != "none" else "✗"
+        status_icon = "✓" if covered else "✗"
         data = [
             status_icon,
             LEVEL_HE.get(pt.level, pt.level),
@@ -283,7 +312,7 @@ def generate_cross_section_docx(
         for ci, val in enumerate(data):
             _cell_text(row.cells[ci], val, size_pt=8,
                        align=WD_ALIGN_PARAGRAPH.CENTER,
-                       color=txt_col if ci < 2 else BLACK)
+                       color=(WHITE if ci == 0 else txt_col) if ci < 2 else BLACK)
 
     _set_col_widths(tbl, [1.5, 2.2, 2.5, 2.8, 2.8, 3.0, 3.0])
     doc.add_paragraph()

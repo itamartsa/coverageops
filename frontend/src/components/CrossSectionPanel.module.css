@@ -180,3 +180,25 @@
   width: 18px; height: 18px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px;
 }
+
+.demBadge {
+  font-size: 9px; font-weight: 700; letter-spacing: .5px; text-transform: none;
+  padding: 1px 6px; border-radius: 2px; border: 1px solid var(--border);
+}
+.demReal { border-color: var(--accent2); color: var(--accent2); background: rgba(0,255,136,0.08); }
+.demSim  { border-color: var(--warn);    color: var(--warn);    background: rgba(255,179,71,0.12); }
+
+.warnBox {
+  background: rgba(255,179,71,0.10); border: 1px solid var(--warn);
+  border-right: 3px solid var(--accent3);
+  padding: 7px 9px; margin-bottom: 10px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.warnLine { display: flex; gap: 6px; font-size: 11px; line-height: 1.45; color: var(--warn); }
+.warnLine > span:first-child { flex-shrink: 0; }
+
+.riskScoreRow {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-dim); margin: -4px 0 12px;
+}
+.riskScoreRow strong { font-family: 'Rajdhani', sans-serif; font-size: 14px; min-width: 24px; text-align: left; }

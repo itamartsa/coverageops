@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { useStore } from "../store/useStore";
-import { coverageApi } from "../services/api";
+import { apiErrorText, coverageApi } from "../services/api";
 import type { CoverageResult } from "../services/api";
+import {
+  collectWarnings, demLabel, demStatus, fmtCoveredVsThreshold, fmtDbm, fmtNum, fmtPct, DASH,
+  isLegacyThreshold, layerFromResult, runWithConcurrency,
+} from "../services/coverageFormat";
 import { notify } from "./Notification";
 import styles from "./AnalysisPanel.module.css";
-import type { MapLayer } from "../store/useStore";
 
 const LEGEND = [
   {
@@ -39,8 +42,24 @@ const FREQ_COLORS: Record<number, string> = {
   3500: "#f59e0b",
 };
 
+/** Max /analyze requests in flight at once. */
+const ANALYZE_CONCURRENCY = 3;
+
+type RunStatus = "queued" | "pending" | "done" | "failed";
+interface SiteRun { status: RunStatus; error?: string; coveredPct?: number }
+
+const RUN_STATUS_LABEL: Record<RunStatus, string> = {
+  queued:  "… בתור",
+  pending: "⏳ מחשב...",
+  done:    "✔ הושלם",
+  failed:  "✕ נכשל",
+};
+
+const errorText = (err: any) => apiErrorText(err, "שגיאה בחישוב");
+
 export default function AnalysisPanel() {
   const [infoOpen, setInfoOpen] = useState(false);
+  const [runs, setRuns] = useState<Record<number, SiteRun>>({});
 
   const {
     sites,
@@ -65,56 +84,65 @@ export default function AnalysisPanel() {
     if (!selectedSiteIds.length) { notify("⚠ בחר לפחות אתר אחד"); return; }
     if (!bbox)                    { notify("⚠ הגדר תא שטח"); return; }
 
+    // Snapshot inputs — the user may change selection/bbox while we compute
+    const siteIds = [...selectedSiteIds];
+    const area    = { ...bbox };
+    const mode    = analysisMode;
+    const nameOf  = (id: number) => sites.find((s) => s.id === id)?.name ?? `אתר ${id}`;
+
     setIsCalculating(true);
     setCoverageResults([]);
+    setRuns(Object.fromEntries(siteIds.map((id) => [id, { status: "queued" as RunStatus }])));
 
-    const results: CoverageResult[] = [];
-    for (const siteId of selectedSiteIds) {
-      try {
-        const result = await coverageApi.analyze({
-          site_id: siteId,
-          mode: analysisMode,
-          sw_lat: bbox.sw_lat, sw_lon: bbox.sw_lon,
-          ne_lat: bbox.ne_lat, ne_lon: bbox.ne_lon,
-          resolution: 300,
-        });
-        results.push(result);
-      } catch (err: any) {
-        setIsCalculating(false);
-        notify(`⚠ ${err.response?.data?.detail ?? "שגיאה בחישוב"}`);
-        return;
-      }
-    }
+    // At most ANALYZE_CONCURRENCY sites in flight; each one reports independently as it settles.
+    // `resolution` is intentionally omitted → server picks an adaptive grid.
+    const settled = await runWithConcurrency(siteIds, ANALYZE_CONCURRENCY,
+      async (siteId): Promise<CoverageResult> => {
+        setRuns((prev) => ({ ...prev, [siteId]: { status: "pending" } }));
+        try {
+          const result = await coverageApi.analyze({
+            site_id: siteId,
+            mode,
+            sw_lat: area.sw_lat, sw_lon: area.sw_lon,
+            ne_lat: area.ne_lat, ne_lon: area.ne_lon,
+          });
+          setRuns((prev) => ({ ...prev, [siteId]: { status: "done", coveredPct: result.covered_pct } }));
+          // Show each result + its map layer as soon as it arrives
+          const current = useStore.getState().coverageResults;
+          setCoverageResults([...current.filter((r) => r.id !== result.id), result]);
+          addMapLayer(layerFromResult(result, nameOf(result.site_id)));
+          return result;
+        } catch (err: any) {
+          const msg = errorText(err);
+          setRuns((prev) => ({ ...prev, [siteId]: { status: "failed", error: msg } }));
+          throw new Error(msg);
+        }
+      },
+    );
 
-    setCoverageResults(results);
     setIsCalculating(false);
 
-    // Create a layer entry in the layer manager for each result
-    results.forEach((result) => {
-      const siteName = sites.find((s) => s.id === result.site_id)?.name ?? `אתר ${result.site_id}`;
-      const layer: MapLayer = {
-        id:         `coverage-${result.id}`,
-        name:       `${siteName} — ${result.mode}`,
-        type:       "coverage",
-        visible:    true,
-        resultId:   result.id,
-        bbox:       result.sw_lat
-          ? { sw_lat: result.sw_lat!, sw_lon: result.sw_lon!, ne_lat: result.ne_lat!, ne_lon: result.ne_lon! }
-          : undefined,
-        mode:       result.mode,
-        coveredPct: result.covered_pct,
-        siteName,
-        createdAt:  result.created_at,
-      };
-      addMapLayer(layer);
-    });
+    const ok   = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+    const fail = settled.length - ok.length;
 
-    const avgPct = (results.reduce((s, r) => s + r.covered_pct, 0) / results.length).toFixed(1);
-    notify(`✅ ניתוח הושלם – ${avgPct}% כיסוי ממוצע | שכבה נוצרה בטאב שכבות`);
+    if (!ok.length) {
+      notify(`⚠ כל ${settled.length} החישובים נכשלו`);
+      return;
+    }
+    const avgPct = (ok.reduce((s, r) => s + (r.covered_pct ?? 0), 0) / ok.length).toFixed(1);
+    const simulated = ok.filter((r) => demStatus(r.dem_source) === "simulated").length;
+    notify(
+      `${fail ? "⚠" : "✅"} ניתוח הושלם – ${ok.length}/${settled.length} אתרים` +
+      ` | ${avgPct}% כיסוי ממוצע מעל סף` +
+      (fail ? ` | ${fail} נכשלו` : "") +
+      (simulated ? ` | ${simulated} על טרן מדומה` : "") +
+      " | שכבות נוצרו בטאב שכבות",
+    );
   }
 
   function clearResults() {
     setCoverageResults([]);
+    setRuns({});
     notify("תוצאות נוקו");
   }
 
@@ -146,12 +174,15 @@ export default function AnalysisPanel() {
           <div className={styles.infoSection}>
             <div className={styles.infoSectionTitle}>🛰 מודל הפצה</div>
             <div className={styles.infoText}>
-              החישוב מבוסס על שילוב של שני מרכיבים:<br />
+              החישוב מבוסס על שילוב של שלושה מרכיבים:<br />
               <strong>FSPL</strong> (Free Space Path Loss) — נוסחת פריס לחישוב
               אובדן נתיב במרחב חופשי בפונקציה של מרחק ותדר:<br />
               <span className={styles.formula}>RSSI = Pₜ − FSPL(d,f) − Ldiff + Ghₐ</span><br />
-              <strong>ITU-R P.526</strong> — אפקט עקיפת סכין (Knife-Edge Diffraction)
-              על בסיס פרופיל גובה אמיתי מ-DEM.
+              <strong>עקיפה רב-מכשולית — שיטת Deygout</strong> (ITU-R P.526 §4.5):
+              מאתרים את המכשול הראשי בנתיב, ולאחר מכן את המכשולים המשניים
+              משני צדיו — ולא רק את המחסום הבודד הגבוה ביותר.<br />
+              <strong>עקמומיות כדור הארץ</strong> — פרופיל הגובה מתוקן לפי רדיוס
+              אפקטיבי <strong>k = 4/3</strong> (שבירה אטמוספרית סטנדרטית).
             </div>
           </div>
 
@@ -159,11 +190,22 @@ export default function AnalysisPanel() {
             <div className={styles.infoSectionTitle}>🗺 נתוני גובה (DEM)</div>
             <div className={styles.infoText}>
               המערכת מורידה אוטומטית tiles של גובה שטח מ-
-              <strong> Terrarium RGB</strong> (AWS S3), ברזולוציה של
-              עד ~10 מ׳/פיקסל. כל tile מקוד RGB:
+              <strong> Terrarium RGB</strong> (AWS S3). כל tile מקוד RGB:
               <span className={styles.formula}>h(מ׳) = R×256 + G + B÷256 − 32768</span>
-              רשת הניתוח: <strong>300×300 = 90,000 תאים</strong>, כל תא בוחן
-              24 נקודות על פרופיל הנתיב מהמשדר.
+              <strong>tiles חסרים</strong> מסומנים כ-NaN ואינם מוחלפים בגובה 0 —
+              כך שים / חור בנתונים לא ייצור &quot;מישור&quot; מדומה. אחוז הפיקסלים התקינים
+              מוצג בתוצאה.<br />
+              כאשר לא נמצאו נתוני DEM אמיתיים התוצאה מסומנת כ-
+              <strong> סימולציה</strong> ומוצגת אזהרה.
+            </div>
+          </div>
+
+          <div className={styles.infoSection}>
+            <div className={styles.infoSectionTitle}>📐 רשת אדפטיבית</div>
+            <div className={styles.infoText}>
+              הרזולוציה נקבעת אוטומטית לפי גודל תא השטח: יעד של
+              <strong> ~40 מ׳ לתא</strong>, בתחום של <strong>60–500 תאים לציר</strong>.
+              שטח קטן מקבל רשת צפופה ומדויקת; שטח גדול נשאר מהיר לחישוב.
             </div>
           </div>
 
@@ -171,11 +213,22 @@ export default function AnalysisPanel() {
             <div className={styles.infoSectionTitle}>⚡ שלבי החישוב לכל תא</div>
             <div className={styles.infoSteps}>
               <div className={styles.infoStep}><span className={styles.infoStepNum}>1</span>חישוב FSPL לפי מרחק Haversine ותדר</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>2</span>דגימת 24 נקודות על פרופיל הגובה לאורך הנתיב</div>
+              <div className={styles.infoStep}><span className={styles.infoStepNum}>2</span>דגימת פרופיל הגובה לאורך הנתיב + תיקון עקמומיות (k=4/3)</div>
               <div className={styles.infoStep}><span className={styles.infoStepNum}>3</span>לכל נקודה: חישוב פרמטר ν (Fresnel-Kirchhoff)</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>4</span>הפסד עקיפה מקסימלי → מחסום הכי קריטי בנתיב</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>5</span>רווח גובה אנטנה: 20·log₁₀(h / 1.5 מ׳)</div>
+              <div className={styles.infoStep}><span className={styles.infoStepNum}>4</span>Deygout: מכשול ראשי + מכשולים משניים → הפסד עקיפה כולל</div>
+              <div className={styles.infoStep}><span className={styles.infoStepNum}>5</span>רווח גובה אנטנה: 20·log₁₀(h / 1.5 מ׳) — מוגבל (capped) כשקיים DEM, כי הטרן כבר מגולם בפרופיל</div>
               <div className={styles.infoStep}><span className={styles.infoStepNum}>6</span>DSM: הוספת 9 dB הפסד תכסית (מבנים/צמחייה)</div>
+              <div className={styles.infoStep}><span className={styles.infoStepNum}>7</span>תאים ללא נתוני גובה (NaN) אינם נספרים כ&quot;מכוסים&quot;</div>
+            </div>
+          </div>
+
+          <div className={styles.infoSection}>
+            <div className={styles.infoSectionTitle}>📶 מהו &quot;שטח מכוסה&quot;?</div>
+            <div className={styles.infoText}>
+              <strong>אחוז הכיסוי מחושב ביחס לסף הקליטה (rx_threshold) של האתר</strong> —
+              אחוז התאים שבהם RSSI ≥ הסף, למשל <span className={styles.inlineCode}>72% ≥ −90 dBm</span>.<br />
+              כמספר משני מוצג גם אחוז השטח עם <strong>אות כלשהו</strong> (&gt; −110 dBm),
+              שהיה ההגדרה הקודמת — ולכן גבוה יותר.
             </div>
           </div>
 
@@ -267,7 +320,7 @@ export default function AnalysisPanel() {
         ) : (
           <div style={{fontSize: 12, color: "var(--text-dim)"}}>
             <span style={{color: "var(--accent2)"}}>תא שטח הוגדר.</span> ניתן לגרור אותו במפה.
-            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={() => { setBbox(null); setCoverageResults([]); }}>✕ אפס ובחר חדש</button>
+            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={() => { setBbox(null); setCoverageResults([]); setRuns({}); }}>✕ אפס ובחר חדש</button>
           </div>
         )}
       </div>
@@ -294,7 +347,26 @@ export default function AnalysisPanel() {
         <button className={styles.runBtn} onClick={runAnalysis} disabled={!readyToRun || isCalculating}>
           {isCalculating ? "⏳ מחשב כיסוי..." : `▶ הרץ חישוב${selectedSiteIds.length > 1 ? ` (${selectedSiteIds.length} אתרים)` : ""}`}
         </button>
-        {coverageResults.length > 0 && (
+        {Object.keys(runs).length > 0 && (
+          <div className={styles.runList}>
+            {Object.entries(runs).map(([id, run]) => {
+              const siteName = sites.find((s) => s.id === +id)?.name ?? `אתר ${id}`;
+              return (
+                <div key={id} className={`${styles.runRow} ${styles[`run_${run.status}`] ?? ""}`}>
+                  <span className={styles.runName}>{siteName}</span>
+                  <span className={styles.runStatus} title={run.error}>
+                    {RUN_STATUS_LABEL[run.status]}
+                    {run.status === "done" && run.coveredPct != null && ` · ${fmtPct(run.coveredPct)}`}
+                  </span>
+                  {run.status === "failed" && run.error && (
+                    <div className={styles.runError}>{run.error}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {(coverageResults.length > 0 || Object.keys(runs).length > 0) && !isCalculating && (
           <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 6}} onClick={clearResults}>
             ✕ נקה תוצאות מהמפה
           </button>
@@ -328,29 +400,65 @@ export default function AnalysisPanel() {
           <div className={styles.sectionHeader}>תוצאות ניתוח</div>
           {coverageResults.map((r) => {
             const siteName = sites.find((s) => s.id === r.site_id)?.name ?? `אתר ${r.site_id}`;
+            // Only the threshold returned WITH this result — never the site's current rx_threshold.
+            const threshold = r.threshold_dbm;
+            const legacy    = isLegacyThreshold(threshold);
+            const warnings  = collectWarnings(r.warnings, r.dem_source);
+            const dem       = demStatus(r.dem_source);
             return (
               <div key={r.id} className={styles.siteResultBlock}>
-                <div className={styles.siteResultTitle}>{siteName}</div>
-                <div className={styles.statsGrid}>
-                  <div className={styles.statBox}>
-                    <div className={styles.statValue}>{r.covered_pct}%</div>
-                    <div className={styles.statLabel}>שטח מכוסה</div>
+                <div className={styles.siteResultTitle}>
+                  {siteName}
+                  <span className={`${styles.demBadge} ${styles[`dem_${dem}`] ?? ""}`}>
+                    {dem === "unknown" ? "DEM ?" : demLabel(r.dem_source)}
+                  </span>
+                </div>
+
+                {warnings.length > 0 && (
+                  <div className={styles.warnBox}>
+                    {warnings.map((w, i) => (
+                      <div key={i} className={styles.warnLine}><span>⚠</span><span>{w}</span></div>
+                    ))}
                   </div>
+                )}
+
+                <div className={styles.coveredMain}>
+                  <div className={styles.coveredValue}>{fmtCoveredVsThreshold(r.covered_pct, threshold)}</div>
+                  <div className={styles.statLabel}>
+                    {legacy ? "תוצאה ישנה — האחוז מתייחס לאות כלשהו (> −110 dBm)" : "שטח מכוסה מעל סף הקליטה בעת הניתוח"}
+                  </div>
+                  <div className={styles.coveredSecondary}>
+                    אות כלשהו (&gt; −110 dBm): <strong>{fmtPct(r.covered_pct_any_signal)}</strong>
+                    {r.weak_pct != null && <> · חלש/שולי: <strong>{fmtPct(r.weak_pct)}</strong></>}
+                  </div>
+                </div>
+
+                <div className={styles.statsGrid3}>
                   <div className={styles.statBox}>
-                    <div className={styles.statValue}>{r.rssi_avg}</div>
+                    <div className={styles.statValue}>{fmtNum(r.rssi_avg)}</div>
                     <div className={styles.statLabel}>RSSI ממוצע</div>
                   </div>
                   <div className={styles.statBox}>
-                    <div className={styles.statValue}>{r.rssi_max}</div>
+                    <div className={styles.statValue}>{fmtNum(r.rssi_max)}</div>
                     <div className={styles.statLabel}>מקסימום</div>
                   </div>
                   <div className={styles.statBox}>
-                    <div className={styles.statValue}>{r.rssi_min}</div>
+                    <div className={styles.statValue}>{fmtNum(r.rssi_min)}</div>
                     <div className={styles.statLabel}>מינימום</div>
                   </div>
                 </div>
+
+                <div className={styles.metaRow}>
+                  <span>רזולוציה: <strong>{r.resolution != null ? `${r.resolution}×${r.resolution}` : DASH}</strong></span>
+                  <span>DEM: <strong>{r.dem_source ?? DASH}</strong>
+                    {r.dem_valid_pct != null && ` (${fmtPct(r.dem_valid_pct, 0)} תקין)`}
+                  </span>
+                  {r.dem_m_per_px != null && <span>{fmtNum(r.dem_m_per_px, 0)} מ׳/פיקסל</span>}
+                  {threshold != null && <span>סף: <strong>{fmtDbm(threshold)}</strong></span>}
+                </div>
                 <div className={styles.duration}>
-                  ⏱ חושב ב-{r.duration_sec}s | מודל {r.mode}
+                  ⏱ חושב ב-{fmtNum(r.duration_sec, 1)}s | מודל {r.mode}
+                  {r.diffraction_method && ` | ${r.diffraction_method}`}
                 </div>
               </div>
             );

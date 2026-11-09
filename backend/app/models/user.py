@@ -4,9 +4,9 @@ SQLAlchemy ORM models
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean,
-    DateTime, ForeignKey, Text, Enum
+    DateTime, ForeignKey, Text, Enum, LargeBinary
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import deferred, relationship
 import enum
 
 from app.core.database import Base
@@ -42,7 +42,7 @@ class Site(Base):
     lat         = Column(Float, nullable=False)
     lon         = Column(Float, nullable=False)
     ant_height  = Column(Float, default=6.0)        # meters above ground
-    elevation_m = Column(Float, default=0.0, nullable=True)  # meters above sea level (ASL)
+    elevation_m = Column(Float, nullable=True)  # meters ASL; NULL = unknown (DEM unavailable)
     frequency   = Column(Integer, nullable=False)   # MHz
     tx_power    = Column(Float, default=43.0)        # dBm EIRP
     rx_threshold= Column(Float, default=-90.0)      # dBm
@@ -75,13 +75,30 @@ class CoverageResult(Base):
     poly_ne_lon  = Column(Float, nullable=False)
 
     # Aggregate statistics
-    covered_pct  = Column(Float)   # % of polygon with signal
+    # covered_pct: % of in-radius cells with RSSI >= threshold_dbm (rx_threshold).
+    # Legacy rows (threshold_dbm IS NULL) stored the "any signal" share instead.
+    covered_pct  = Column(Float)
     rssi_avg     = Column(Float)
     rssi_max     = Column(Float)
-    rssi_min     = Column(Float)
+    rssi_min     = Column(Float)                             # over cells > -110 dBm
+    rssi_min_all = Column(Float, nullable=True)              # over ALL in-radius cells (risk)
+    covered_pct_any_signal = Column(Float, nullable=True)   # % cells > -110 dBm
+    weak_pct     = Column(Float, nullable=True)              # % weak + marginal
+    threshold_dbm = Column(Float, nullable=True)             # rx_threshold used
 
-    # GeoJSON result (coverage grid as FeatureCollection)
-    geojson_path = Column(String(512), nullable=True)   # path to stored file
+    # RSSI raster (coverage_engine.encode_rssi_grid; row 0 = north, NaN = outside radius)
+    # deferred: listings never load the blob (use rssi_raster.isnot(None) in SQL)
+    rssi_raster  = deferred(Column(LargeBinary, nullable=True))
+    resolution   = Column(Integer, nullable=True)            # cells per axis
+
+    # Data quality / provenance
+    dem_source    = Column(String(32), nullable=True)        # "terrarium" | "none"
+    dem_valid_pct = Column(Float, nullable=True)
+    dem_m_per_px  = Column(Float, nullable=True)             # native DEM resolution
+    model         = Column(String(128), nullable=True)       # propagation model label
+
+    # Legacy: GeoJSON FeatureCollection on disk (rows created before raster storage)
+    geojson_path = Column(String(512), nullable=True)
 
     created_at   = Column(DateTime, default=datetime.utcnow)
     duration_sec = Column(Float, nullable=True)

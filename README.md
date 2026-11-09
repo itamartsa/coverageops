@@ -23,10 +23,13 @@ coverageops/
 │   │   │   ├── coverage.py    # /api/coverage/*
 │   │   │   └── users.py       # /api/users/*
 │   │   ├── services/
-│   │   │   └── coverage_engine.py  # מנוע חישוב FSPL + terrain
+│   │   │   ├── coverage_engine.py  # מנוע הפצה: FSPL + Deygout (k=4/3) + רסטר RSSI
+│   │   │   ├── terrain.py          # אריחי DEM (Terrarium) → גריד גבהים
+│   │   │   ├── elevation.py        # גובה נקודה
+│   │   │   ├── risk.py             # דירוג סיכון + המלצות
+│   │   │   └── report_generator.py # דוח Word לחתך
 │   │   └── scripts/seed.py    # משתמשי ברירת מחדל
-│   ├── tests/
-│   │   └── test_coverage.py   # pytest unit + integration
+│   ├── tests/                 # pytest: engine, terrain, risk, API
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── alembic.ini
@@ -161,11 +164,25 @@ docker compose --profile production up --build -d
 | DELETE | `/api/sites/{id}`     | מחיקת אתר           |
 
 ### Coverage
-| Method | Path                          | תיאור              |
-|--------|-------------------------------|--------------------|
-| POST   | `/api/coverage/analyze`       | הרצת ניתוח כיסוי   |
-| GET    | `/api/coverage/history/{id}`  | היסטוריית ניתוחים  |
-| GET    | `/api/coverage/result/{id}/geojson` | הורדת GeoJSON|
+| Method | Path                                   | תיאור              |
+|--------|----------------------------------------|--------------------|
+| POST   | `/api/coverage/analyze`                | הרצת ניתוח כיסוי (שומר רסטר RSSI; `resolution` אופציונלי = אדפטיבי) |
+| GET    | `/api/coverage/`                       | 100 ניתוחים אחרונים |
+| GET    | `/api/coverage/history/{site_id}`      | היסטוריית ניתוחים לאתר |
+| GET    | `/api/coverage/result/{id}`            | סטטיסטיקה + איכות נתונים + אזהרות (ללא GeoJSON) |
+| GET    | `/api/coverage/result/{id}/png`        | שכבת PNG מהרסטר (`width`, `height`) על ה-bbox השמור |
+| GET    | `/api/coverage/result/{id}/geojson`    | הורדת GeoJSON (נבנה לפי דרישה) |
+| GET    | `/api/coverage/result/{id}/report`     | דוח: סיכון, אשכולות אפלה, `data_quality`, המלצות |
+| DELETE | `/api/coverage/result/{id}`            | מחיקת תוצאה |
+| POST   | `/api/coverage/cross-section`          | חתך רדיו לאורך ציר (JSON) |
+| POST   | `/api/coverage/cross-section/docx`     | חתך רדיו – דוח Word |
+| GET    | `/api/coverage/point-elevation`        | גובה נקודה (`null` אם אין נתונים) |
+| GET    | `/api/coverage/topo-overlay`           | שכבת טופוגרפיה PNG |
+
+שדות עיקריים בתוצאת ניתוח: `covered_pct` (% מעל סף הקבלה), `covered_pct_any_signal`
+(% עם אות כלשהו > −110 dBm), `threshold_dbm`, `weak_pct`, `level_distribution`,
+`dem_source` (`terrarium`/`none`), `dem_valid_pct`, `dem_m_per_px`, `resolution`, `model`,
+`diffraction_method`, `warnings` (עברית). פירוט מלא: `docs/TECHNICAL.md`.
 
 **דוגמה – הרצת ניתוח:**
 ```bash
@@ -176,9 +193,9 @@ curl -X POST http://localhost:8000/api/coverage/analyze \
     "site_id": 1,
     "mode": "DTM",
     "sw_lat": 31.72, "sw_lon": 35.15,
-    "ne_lat": 31.82, "ne_lon": 35.30,
-    "resolution": 80
+    "ne_lat": 31.82, "ne_lon": 35.30
   }'
+# ללא "resolution" → רזולוציה אדפטיבית (~40 מ' לתא, 60–500 תאים לציר)
 ```
 
 ---
@@ -199,30 +216,20 @@ pytest tests/ -v
 
 ## 📡 מנוע חישוב כיסוי
 
-### שלב 1 (נוכחי) – FSPL + Pseudo-Terrain
-- Free Space Path Loss: `FSPL = 20log(d) + 20log(f) + 20log(4π/c)`
-- וריאציית טרן סימולטיבית (דטרמיניסטית)
-- מצב DSM מוסיף אובדן עירוני
-
-### שלב 2 – SRTM אמיתי
-```bash
-# הורד נתוני גובה לישראל
-wget https://srtm.csi.cgiar.org/wp-content/uploads/files/srtm_5x5/TIFF/srtm_37_04.zip
-unzip srtm_37_04.zip -d ./data/srtm/
-
-# עדכן coverage_engine.py – הסר הערה מ-SRTM block
+```
+RSSI = Tx − FSPL(d, f) − DiffractionLoss − Clutter(DSM) + HeightGain
 ```
 
-### שלב 3 – Signal-Server (Longley-Rice)
-```bash
-# התקן Signal-Server
-git clone https://github.com/Cloud-RF/Signal-Server.git
-cd Signal-Server && make
-cp signal-server /usr/local/bin/
-
-# עדכן .env:
-SIGNAL_SERVER_BIN=/usr/local/bin/signal-server
-```
+- **נתוני גבהים אמיתיים** – אריחי Terrarium (זום 8–12 לפי גודל השטח), מטמון בזיכרון,
+  הורדה מקבילית. אריח חסר → NaN (שטח לא ידוע, לא "אפס"); אין נתונים כלל →
+  סימולציה המסומנת `dem_source="none"` עם אזהרה.
+- **עקיפה** – ITU-R P.526 Deygout (עד 3 שפות) על כדור ארץ מעוקל (k = 4/3).
+- **אחוז כיסוי** – לפי סף הקבלה של האתר (`rx_threshold`), לא "כל אות".
+- **רזולוציה אדפטיבית** – יעד 40 מ' לתא, לא עדין מה-DEM, 60–500 תאים לציר.
+- **אתר מחוץ לתא השטח** – הטופוגרפיה שבין האתר לשטח נכללת (החישוב רץ על שטח מורחב
+  ונחתך חזרה).
+- **אחסון** – רסטר RSSI דחוס ב-DB; PNG / GeoJSON / דוח נגזרים ממנו לפי דרישה.
+- **סיכון והמלצות** – `services/risk.py`, מקור אמת יחיד לניתוח שטחי ולחתך.
 
 ---
 
@@ -242,7 +249,7 @@ SIGNAL_SERVER_BIN=/usr/local/bin/signal-server
 | פאזה | תכולה                              | סטטוס    |
 |------|------------------------------------|----------|
 | 1    | Login, Sites CRUD, Coverage FSPL   | ✅ הושלם  |
-| 2    | SRTM אמיתי, ייצוא PDF/PNG          | 🔜 הבא   |
+| 2    | DEM אמיתי (Terrarium) + Deygout, רסטר, ייצוא PNG/GeoJSON | ✅ הושלם  |
 | 3    | Signal-Server, השוואת אתרים       | 📋 מתוכנן|
 | 4    | ניהול ארגוני, API חיצוני          | 📋 מתוכנן|
 

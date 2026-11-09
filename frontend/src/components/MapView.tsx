@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
-import { sitesApi, coverageApi } from "../services/api";
+import api, { apiErrorTextAsync, sitesApi, coverageApi } from "../services/api";
 import styles from "./MapView.module.css";
 
 // Coverage colors matching backend levels
@@ -54,6 +54,7 @@ export default function MapView() {
   const covBlobsRef     = useRef<Map<string, string>>(new Map());
   // Special overlays
   const demOverlayRef   = useRef<L.ImageOverlay | null>(null);
+  const demBlobUrlRef   = useRef<string | null>(null);
   const cellularRef     = useRef<L.LayerGroup | null>(null);
 
   const {
@@ -117,8 +118,6 @@ export default function MapView() {
     // Coord + elevation display
     // Elevation is fetched with debounce (600ms) to avoid flooding the backend
     let elevTimer: ReturnType<typeof setTimeout> | null = null;
-    const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
     map.on("mousemove", (e) => {
       const el = document.getElementById("coord-display");
       if (!el) return;
@@ -131,16 +130,12 @@ export default function MapView() {
       if (elevTimer) clearTimeout(elevTimer);
       elevTimer = setTimeout(async () => {
         try {
-          const token = localStorage.getItem("token");
-          const res = await fetch(
-            `${BASE}/api/coverage/point-elevation?lat=${lat}&lon=${lng}`,
-            token ? { headers: { Authorization: `Bearer ${token}` } } : {}
-          );
-          if (res.ok) {
-            const data = await res.json();
-            if (el) {
-              el.textContent = `N ${lat.toFixed(5)}°  E ${lng.toFixed(5)}°  |  ${data.elevation_m} מ' ASL`;
-            }
+          // Shared axios instance → JWT attached by the interceptor
+          const data = (await api.get<{ elevation_m: number }>(
+            "/api/coverage/point-elevation", { params: { lat, lon: lng } },
+          )).data;
+          if (el && data?.elevation_m != null) {
+            el.textContent = `N ${lat.toFixed(5)}°  E ${lng.toFixed(5)}°  |  ${data.elevation_m} מ' ASL`;
           }
         } catch {
           // silently ignore network errors
@@ -153,8 +148,10 @@ export default function MapView() {
 
   // ── Drag & Drop Map Draw Handler ─────────────────────────────────────────────
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    const mapOrNull = mapRef.current;
+    if (!mapOrNull) return;
+    // Explicitly non-null so the hoisted handler functions below keep the narrowing
+    const map: L.Map = mapOrNull;
 
     let drawingStart: L.LatLng | null = null;
     let tempRect: L.Rectangle | null = null;
@@ -199,7 +196,7 @@ export default function MapView() {
       }
 
       if (tempRect) map.removeLayer(tempRect);
-      tempRect = L.rectangle([sw, ne], {
+      tempRect = L.rectangle(L.latLngBounds(sw, ne), {
         color: "#3b82f6", weight: 2, fillOpacity: 0.1, dashArray: "4,4"
       }).addTo(map);
     }
@@ -262,26 +259,56 @@ export default function MapView() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
     const demVisible = mapLayers.find((l) => l.id === "dem")?.visible ?? false;
 
-    const updateDem = () => {
+    // Removes the current DEM overlay and revokes its object URL
+    const clearDem = () => {
+      if (demOverlayRef.current) { map.removeLayer(demOverlayRef.current); demOverlayRef.current = null; }
+      if (demBlobUrlRef.current) { URL.revokeObjectURL(demBlobUrlRef.current); demBlobUrlRef.current = null; }
+    };
+
+    let ctrl: AbortController | null = null;
+    let lastErr = "";
+    const updateDem = async () => {
+      ctrl?.abort();                       // drop any in-flight request for an older viewport
+      const myCtrl = ctrl = new AbortController();
       const bounds = map.getBounds();
       const sw = bounds.getSouthWest();
       const ne = bounds.getNorthEast();
-      const url = `${BASE}/api/coverage/topo-overlay?sw_lat=${sw.lat}&sw_lon=${sw.lng}&ne_lat=${ne.lat}&ne_lon=${ne.lng}&width=800&height=800`;
-      if (demOverlayRef.current) map.removeLayer(demOverlayRef.current);
-      demOverlayRef.current = L.imageOverlay(url, bounds, { opacity: 0.55, zIndex: 200 }).addTo(map);
+      try {
+        // Shared axios instance → JWT attached by the interceptor
+        const { data } = await api.get<Blob>("/api/coverage/topo-overlay", {
+          params: { sw_lat: sw.lat, sw_lon: sw.lng, ne_lat: ne.lat, ne_lon: ne.lng, width: 800, height: 800 },
+          responseType: "blob",
+          signal: myCtrl.signal,
+        });
+        if (myCtrl.signal.aborted) return;
+        clearDem();
+        const url = URL.createObjectURL(data);
+        demBlobUrlRef.current = url;
+        demOverlayRef.current = L.imageOverlay(url, bounds, { opacity: 0.55, zIndex: 200 }).addTo(map);
+        lastErr = "";
+      } catch (err: any) {
+        if (myCtrl.signal.aborted || err?.code === "ERR_CANCELED") return;
+        // e.g. 413/400 with a Hebrew `detail` for oversized areas — notify once per distinct message
+        const msg = await apiErrorTextAsync(err, "שגיאה בטעינת שכבת טופוגרפיה");
+        if (msg !== lastErr) { lastErr = msg; notify(`⚠ ${msg}`); }
+      }
     };
 
     if (demVisible) {
       updateDem();
       map.on("moveend", updateDem);
     } else {
-      if (demOverlayRef.current) { map.removeLayer(demOverlayRef.current); demOverlayRef.current = null; }
+      clearDem();
     }
-    return () => { map.off("moveend", updateDem); };
+    return () => { map.off("moveend", updateDem); ctrl?.abort(); };
   }, [mapLayers.find((l) => l.id === "dem")?.visible]);
+
+  // Revoke the DEM overlay's object URL on unmount
+  useEffect(() => () => {
+    if (demBlobUrlRef.current) { URL.revokeObjectURL(demBlobUrlRef.current); demBlobUrlRef.current = null; }
+  }, []);
 
   // ── Cellular towers (Overpass API) ────────────────────────────────────────────
   useEffect(() => {
@@ -642,7 +669,7 @@ export default function MapView() {
     if (bbox) {
       const sw: L.LatLngLiteral = { lat: bbox.sw_lat, lng: bbox.sw_lon };
       const ne: L.LatLngLiteral = { lat: bbox.ne_lat, lng: bbox.ne_lon };
-      polyLayerRef.current = L.rectangle([sw, ne], {
+      polyLayerRef.current = L.rectangle(L.latLngBounds(sw, ne), {
         color: isCalculating ? "#facc15" : "#3b82f6",
         weight: 2,
         fillColor: isCalculating ? "#facc15" : "#3b82f6",
@@ -679,10 +706,10 @@ export default function MapView() {
 
         handle.on("drag", (e) => {
           const pos = (e.target as L.Marker).getLatLng();
-          polyLayerRef.current?.setBounds([
-            { lat: pos.lat - latSpan / 2, lng: pos.lng - lngSpan / 2 },
-            { lat: pos.lat + latSpan / 2, lng: pos.lng + lngSpan / 2 },
-          ]);
+          polyLayerRef.current?.setBounds(L.latLngBounds(
+            [pos.lat - latSpan / 2, pos.lng - lngSpan / 2],
+            [pos.lat + latSpan / 2, pos.lng + lngSpan / 2],
+          ));
         });
 
         handle.on("dragend", (e) => {

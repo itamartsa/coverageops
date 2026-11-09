@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from app.models.user import User, UserRole, Site
 from app.services.elevation import fetch_elevation
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -43,7 +45,7 @@ class SiteOut(BaseModel):
     lat:          float
     lon:          float
     ant_height:   float
-    elevation_m:  Optional[float] = 0.0
+    elevation_m:  Optional[float] = None   # null = unknown (DEM unavailable)
     frequency:    int
     tx_power:     float
     rx_threshold: float
@@ -77,7 +79,7 @@ def create_site(
     if body.frequency not in VALID_FREQS:
         raise HTTPException(400, detail=f"תדר לא תקין. תדרים מותרים: {VALID_FREQS}")
 
-    elevation = fetch_elevation(body.lat, body.lon)
+    elevation = _site_elevation(body.lat, body.lon)
     site = Site(**body.model_dump(), elevation_m=elevation, owner_id=current_user.id)
     db.add(site)
     db.commit()
@@ -112,7 +114,7 @@ def update_site(
     new_lat = updates.get("lat", site.lat)
     new_lon = updates.get("lon", site.lon)
     if "lat" in updates or "lon" in updates:
-        updates["elevation_m"] = fetch_elevation(new_lat, new_lon)
+        updates["elevation_m"] = _site_elevation(new_lat, new_lon)
 
     for field, value in updates.items():
         setattr(site, field, value)
@@ -135,6 +137,18 @@ def delete_site(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+def _site_elevation(lat: float, lon: float) -> Optional[float]:
+    """
+    Ground elevation (m ASL) for a site, or None when the DEM tile is
+    unavailable. None means "unknown": the coverage API then samples the
+    analysis DEM grid (or warns) instead of placing the transmitter at 0 m.
+    """
+    elev = fetch_elevation(lat, lon)
+    if elev is None:
+        log.warning("Site elevation unavailable for (%.5f, %.5f) – storing NULL", lat, lon)
+    return elev
+
+
 def _get_or_404(db, site_id):
     site = db.query(Site).filter(Site.id == site_id).first()
     if not site:

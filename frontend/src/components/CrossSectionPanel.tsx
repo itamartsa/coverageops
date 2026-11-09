@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { coverageApi, type CrossSectionResult } from "../services/api";
+import { apiErrorText, apiErrorTextAsync, coverageApi, type CrossSectionResult } from "../services/api";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import InfoTooltip from "./InfoTooltip";
+import { collectWarnings, demLabel, demStatus, fmtCoveredVsThreshold, fmtNum, fmtPct } from "../services/coverageFormat";
 import styles from "./CrossSectionPanel.module.css";
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -24,6 +25,7 @@ const TIPS = {
   risk:      "רמת סיכון מבצעי של הנתיב:\nLOW = כיסוי תקין\nMEDIUM = גבולי, מומלץ לבדוק\nHIGH = בעייתי, נדרשת פעולה\nCRITICAL = לא מתאים לתקשורת בלא ממסר",
   covered:   "אחוז הנתיב בו עוצמת האות מעל סף הקליטה.\nמתחת ל-80% = ציר מסוכן לתקשורת רציפה.",
   dead_zones:"אזורים ללא קשר בכלל לאורך הנתיב.\nכל אזור מת = אפלה קשר מוחלטת. יש לתכנן ממסרים.",
+  risk_score:"ציון סיכון בסולם 1–4 המחושב בשרת:\n1 = נמוך (LOW)\n2 = בינוני (MEDIUM)\n3 = גבוה (HIGH)\n4 = קריטי (CRITICAL)",
   dtm_dsm:   "DTM = מודל טרן בלבד (שטח פתוח, ללא בניינים).\nDSM = מודל עם בניינים ועצים (מתאים לעירוני).\nבשטח לחימה – DSM מדויק יותר.",
 };
 
@@ -80,9 +82,11 @@ export default function CrossSectionPanel() {
       });
       setResult(res);
       setCrossSectionResult(res);
-      notify(`✅ חתך הושלם – ${res.covered_pct}% כיסוי | סיכון: ${RISK_HE[res.risk_level]}`);
+      const sim = demStatus(res.dem_source) === "simulated";
+      notify(`${sim ? "⚠" : "✅"} חתך הושלם – ${fmtCoveredVsThreshold(res.covered_pct, res.threshold_dbm, { legacyLabel: false })} כיסוי | סיכון: ${RISK_HE[res.risk_level] ?? res.risk_level}` +
+             (sim ? " | טרן מדומה" : ""));
     } catch (e: any) {
-      notify(`⚠ ${e.response?.data?.detail ?? "שגיאה בחישוב"}`);
+      notify(`⚠ ${apiErrorText(e, "שגיאה בחישוב")}`);
     } finally {
       setLoading(false);
     }
@@ -102,8 +106,8 @@ export default function CrossSectionPanel() {
       a.href = url; a.download = `חתך_רדיו_${siteName}.docx`; a.click();
       URL.revokeObjectURL(url);
       notify("✅ הדוח הורד בהצלחה");
-    } catch {
-      notify("⚠ שגיאה בייצוא הדוח");
+    } catch (e: any) {
+      notify(`⚠ ${await apiErrorTextAsync(e, "שגיאה בייצוא הדוח")}`);
     } finally {
       setExporting(false);
     }
@@ -288,13 +292,39 @@ export default function CrossSectionPanel() {
       {/* Results */}
       {result && (
         <div className={styles.results}>
-          <div className={styles.header}>תוצאות חתך</div>
+          <div className={styles.header}>
+            תוצאות חתך
+            {demStatus(result.dem_source) !== "unknown" && (
+              <span
+                className={`${styles.demBadge} ${demStatus(result.dem_source) === "simulated" ? styles.demSim : styles.demReal}`}
+                title={result.dem_valid_pct != null ? `${fmtPct(result.dem_valid_pct, 0)} פיקסלי DEM תקינים` : undefined}
+              >
+                {demStatus(result.dem_source) === "simulated" ? "⚠ " : ""}{demLabel(result.dem_source)}
+              </span>
+            )}
+          </div>
+
+          {(() => {
+            const warnings = collectWarnings(result.warnings, result.dem_source);
+            return warnings.length > 0 ? (
+              <div className={styles.warnBox}>
+                {warnings.map((w, i) => (
+                  <div key={i} className={styles.warnLine}><span>⚠</span><span>{w}</span></div>
+                ))}
+              </div>
+            ) : null;
+          })()}
 
           {/* Stats */}
           <div className={styles.statRow}>
             <div className={styles.statBox}>
-              <div className={styles.statVal}>{result.covered_pct}%</div>
+              <div className={styles.statVal} style={{ fontSize: 14, direction: "ltr" }}>
+                {fmtCoveredVsThreshold(result.covered_pct, result.threshold_dbm, { legacyLabel: false })}
+              </div>
               <div className={styles.statLbl}>כיסוי ציר <InfoTooltip text={TIPS.covered} /></div>
+              <div className={styles.statLbl} title="אחוז הציר עם אות כלשהו (> −110 dBm)">
+                אות כלשהו: {fmtPct(result.covered_pct_any_signal)}
+              </div>
             </div>
             <div className={styles.statBox}>
               <div className={styles.statVal}>{result.dead_zones.length}</div>
@@ -310,10 +340,25 @@ export default function CrossSectionPanel() {
                        borderColor: RISK_COLORS[result.risk_level] }}
             >
               <div className={styles.statVal} style={{ color: RISK_COLORS[result.risk_level] }}>
-                {RISK_HE[result.risk_level]}
+                {RISK_HE[result.risk_level] ?? result.risk_level}
               </div>
               <div className={styles.statLbl}>סיכון <InfoTooltip text={TIPS.risk} /></div>
             </div>
+          </div>
+
+          <div className={styles.riskScoreRow}>
+            <span>ציון סיכון <InfoTooltip text={TIPS.risk_score} /></span>
+            <div className={styles.distBarBg}>
+              {result.risk_score != null && (
+                <div className={styles.distBar} style={{
+                  width: `${Math.max(0, Math.min(100, (result.risk_score / 4) * 100))}%`,
+                  background: RISK_COLORS[result.risk_level] ?? "var(--accent)",
+                }} />
+              )}
+            </div>
+            <strong style={{ color: RISK_COLORS[result.risk_level] ?? "var(--text)" }}>
+              {result.risk_score != null ? `${fmtNum(result.risk_score, 0)} / 4` : fmtNum(result.risk_score, 0)}
+            </strong>
           </div>
 
           {/* Legend – color guide */}
@@ -349,7 +394,7 @@ export default function CrossSectionPanel() {
           <div className={styles.subHeader}>התפלגות אות</div>
           <div className={styles.distBars}>
             {["excellent","good","medium","weak","marginal","none"].map(lvl => {
-              const d = result.signal_distribution[lvl];
+              const d = result.signal_distribution?.[lvl];
               if (!d?.count) return null;
               return (
                 <div key={lvl} className={styles.distRow}>
@@ -366,7 +411,7 @@ export default function CrossSectionPanel() {
 
           {/* Recommendations */}
           <div className={styles.subHeader}>המלצות מבצעיות</div>
-          {result.recommendations.map((r, i) => (
+          {(result.recommendations ?? []).map((r, i) => (
             <div key={i} className={styles.rec}>
               <span className={styles.recNum}>{i + 1}</span>
               <span>{r}</span>

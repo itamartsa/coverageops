@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store/useStore";
 import type { BaseMapId, MapLayer } from "../store/useStore";
+import { fmtCoveredVsThreshold, demStatus, isLegacyThreshold } from "../services/coverageFormat";
 import styles from "./LayersPanel.module.css";
 
 // ── Base-map catalogue ────────────────────────────────────────────────────────
@@ -136,8 +137,16 @@ export default function LayersPanel() {
                 <span className={`${styles.modeTag} ${layer.mode === "DSM" ? styles.dsm : styles.dtm}`}>
                   {layer.mode ?? "DTM"}
                 </span>
-                {layer.coveredPct !== undefined && (
-                  <span className={styles.pctTag}>{layer.coveredPct}% כיסוי</span>
+                {layer.coveredPct != null && (
+                  <span className={styles.pctTag}>
+                    <bdi>{fmtCoveredVsThreshold(layer.coveredPct, layer.thresholdDbm)}</bdi>{!isLegacyThreshold(layer.thresholdDbm) && " כיסוי"}
+                  </span>
+                )}
+                {demStatus(layer.demSource) === "simulated" && (
+                  <span
+                    className={styles.simTag}
+                    title="התוצאה מבוססת על טרן מדומה ולא על נתוני DEM אמיתיים"
+                  >⚠ סימולציה</span>
                 )}
                 {layer.createdAt && (
                   <span className={styles.dateTag}>

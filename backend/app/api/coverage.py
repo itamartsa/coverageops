@@ -3,18 +3,29 @@ Coverage API
 ────────────
 Endpoints for running coverage analyses, retrieving results,
 generating reports, cross-section analysis, and topography overlay.
+
+Storage model
+  New results store the raw RSSI raster (coverage_engine.encode_rssi_grid,
+  row 0 = north, NaN = outside the analysis radius) in
+  CoverageResult.rssi_raster. PNG, GeoJSON and report are all derived from
+  that raster on demand. Legacy rows (created before raster storage) only
+  have a GeoJSON file at geojson_path and are still served through the
+  old code paths.
 """
 import io
 import json
+import logging
 import math
 import os
-import urllib.request
+import time
+import urllib.parse
+from collections import deque
+from dataclasses import replace as dc_replace
 from datetime import datetime
-from io import BytesIO
-from typing import Optional, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -24,14 +35,38 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role
 from app.models.user import User, Site, CoverageResult, AnalysisMode
+from app.services import terrain
 from app.services.coverage_engine import (
+    ANY_SIGNAL_DBM, DEM_SOURCE_TERRARIUM,
     SiteParams, BoundingBox,
     calculate_coverage, calculate_cross_section,
+    decode_rssi_grid, effective_height_gain_db, encode_rssi_grid,
+    fspl_db, level_distribution_from_grid, rssi_grid_to_geojson, rssi_grid_to_png,
 )
-from app.services.terrain import fetch_elevation_grid
+from app.services.elevation import fetch_elevation
 from app.services.report_generator import generate_cross_section_docx
+from app.services.risk import (
+    assess_risk, build_area_recommendations, operational_summary,
+)
+from app.services.terrain import DemAreaTooLarge, ElevationGrid, fetch_elevation_grid_ex
 
 router = APIRouter()
+log    = logging.getLogger(__name__)
+
+M_PER_DEG_LAT       = 111_320.0   # metres per degree of latitude (mean)
+SITE_DEM_MARGIN_KM  = 0.5         # DEM margin around a site outside the bbox
+CLIENT_RES_MIN      = 20
+CLIENT_RES_MAX      = 500
+MAX_PNG_SIDE        = 4096
+MAX_REPORT_CLUSTERS = 10
+TERRAIN_MARGIN_DB   = 7.5         # report-only assumption for theoretical radii
+
+# Lower RSSI bound (exclusive) of each level — the boundaries used by
+# coverage_engine.classify_rssi (verified in tests/test_api_coverage.py).
+LEVEL_LOWER_BOUND_DBM: Dict[str, float] = {
+    "excellent": -70.0, "good": -80.0, "medium": -90.0,
+    "weak": -100.0, "marginal": -110.0,
+}
 
 
 # ── Request / Response Schemas ────────────────────────────────────────────────
@@ -43,26 +78,45 @@ class CoverageRequest(BaseModel):
     sw_lon:     float = Field(..., ge=-180, le=180)
     ne_lat:     float = Field(..., ge=-90,  le=90)
     ne_lon:     float = Field(..., ge=-180, le=180)
-    # Grid resolution (points per axis). Higher = finer grid, slower compute.
-    resolution: Optional[int] = Field(300, ge=20, le=500)
+    # Grid resolution (cells per axis). None → adaptive (see adaptive_resolution).
+    resolution: Optional[int] = Field(None, ge=CLIENT_RES_MIN, le=CLIENT_RES_MAX)
 
 
 class CoverageResultOut(BaseModel):
     id:           int
     site_id:      int
     mode:         str
-    covered_pct:  float
-    rssi_avg:     float
-    rssi_max:     float
-    rssi_min:     float
-    duration_sec: Optional[float]
+    covered_pct:  Optional[float] = None          # % cells ≥ threshold_dbm
+    rssi_avg:     Optional[float] = None
+    rssi_max:     Optional[float] = None
+    rssi_min:     Optional[float] = None          # over cells with any signal
+    rssi_min_all: Optional[float] = None          # over ALL in-radius cells (risk input)
+    duration_sec: Optional[float] = None
     created_at:   datetime
-    geojson:      dict
     # Bounding box — needed by frontend to position the PNG image overlay
     sw_lat: Optional[float] = None
     sw_lon: Optional[float] = None
     ne_lat: Optional[float] = None
     ne_lon: Optional[float] = None
+    # Threshold-based statistics
+    covered_pct_any_signal: Optional[float] = None
+    threshold_dbm:          Optional[float] = None
+    weak_pct:               Optional[float] = None
+    level_distribution:     Optional[Dict[str, Dict[str, float]]] = None
+    # Data quality / provenance
+    dem_source:         Optional[str]   = None
+    dem_valid_pct:      Optional[float] = None
+    dem_m_per_px:       Optional[float] = None
+    resolution:         Optional[int]   = None
+    model:              Optional[str]   = None
+    diffraction_method: Optional[str]   = None
+    dem_extended:       Optional[bool]  = None    # analyze only
+    has_raster:         bool            = False
+    risk_level:         Optional[str]   = None    # risk.assess_risk on stored stats
+    risk_score:         Optional[int]   = None
+    warnings:           List[str]       = []
+    # No longer returned (use GET /result/{id}/geojson); kept for schema compat.
+    geojson:            Optional[dict]  = None
 
     class Config:
         from_attributes = True
@@ -81,6 +135,387 @@ class CrossSectionRequest(BaseModel):
     resolution: Optional[int] = Field(5, ge=2, le=20)
 
 
+# ── Geometry helpers ──────────────────────────────────────────────────────────
+
+def _m_per_deg_lon(lat: float) -> float:
+    return M_PER_DEG_LAT * max(math.cos(math.radians(lat)), 1e-6)
+
+
+def _bbox_max_span_m(bbox: BoundingBox) -> float:
+    """Larger side of the bbox in metres (lon side measured at mid-latitude)."""
+    mid_lat = (bbox.sw_lat + bbox.ne_lat) / 2.0
+    h = (bbox.ne_lat - bbox.sw_lat) * M_PER_DEG_LAT
+    w = (bbox.ne_lon - bbox.sw_lon) * _m_per_deg_lon(mid_lat)
+    return max(h, w)
+
+
+def adaptive_resolution(bbox: BoundingBox, dem_m_per_px: Optional[float] = None) -> int:
+    """
+    Cells per axis for an analysis bbox:
+        clamp(round(max_span_m / max(TARGET_CELL_M, dem_m_per_px)),
+              MIN_GRID_RESOLUTION, MAX_GRID_RESOLUTION)
+    A cell is never finer than the native DEM resolution (no fake detail).
+    """
+    cell_m = max(float(settings.TARGET_CELL_M), float(dem_m_per_px or 0.0))
+    r = int(round(_bbox_max_span_m(bbox) / cell_m))
+    return int(min(max(r, settings.MIN_GRID_RESOLUTION), settings.MAX_GRID_RESOLUTION))
+
+
+def _estimate_dem_m_per_px(bbox: BoundingBox) -> Optional[float]:
+    """Native m/px of the DEM zoom terrain.py will pick for this bbox (no network)."""
+    try:
+        z = terrain._choose_zoom(bbox.sw_lat, bbox.sw_lon, bbox.ne_lat, bbox.ne_lon)
+        return terrain._m_per_px((bbox.sw_lat + bbox.ne_lat) / 2.0, z)
+    except Exception:                                   # pragma: no cover
+        return None
+
+
+def _site_union_bbox(bbox: BoundingBox, lat: float, lon: float,
+                     margin_km: float = SITE_DEM_MARGIN_KM) -> BoundingBox:
+    """Union of bbox and the site location ± margin."""
+    m_lat = margin_km * 1000.0 / M_PER_DEG_LAT
+    m_lon = margin_km * 1000.0 / _m_per_deg_lon(lat)
+    if bbox.sw_lat <= lat <= bbox.ne_lat and bbox.sw_lon <= lon <= bbox.ne_lon:
+        return bbox
+    return BoundingBox(
+        min(bbox.sw_lat, lat - m_lat), min(bbox.sw_lon, lon - m_lon),
+        max(bbox.ne_lat, lat + m_lat), max(bbox.ne_lon, lon + m_lon),
+    )
+
+
+def _extend_bbox_to_site(
+    bbox: BoundingBox, site_lat: float, site_lon: float,
+    R: int, max_res: int,
+) -> Tuple[BoundingBox, int, bool, bool]:
+    """
+    Extend the analysis bbox so that it also contains the site (+ margin),
+    keeping the user's cell size and alignment: the bbox is grown by whole
+    cells on each side, and both axes end up with the same cell count R_ext
+    (the engine needs a square R×R grid). The user bbox therefore maps to an
+    exact integer window of the extended grid.
+
+    If R_ext would exceed max_res the extension is scaled down (the part of
+    the path beyond the extended bbox then uses the engine's linear-ground
+    fallback).
+
+    Returns (ext_bbox, R_ext, extended, capped).
+    """
+    if bbox.sw_lat <= site_lat <= bbox.ne_lat and bbox.sw_lon <= site_lon <= bbox.ne_lon:
+        return bbox, R, False, False
+
+    dlat  = (bbox.ne_lat - bbox.sw_lat) / R
+    dlon  = (bbox.ne_lon - bbox.sw_lon) / R
+    union = _site_union_bbox(bbox, site_lat, site_lon)
+
+    def _cells(excess: float, d: float) -> int:
+        return max(0, int(math.ceil(excess / d - 1e-9)))
+
+    n_n = _cells(union.ne_lat - bbox.ne_lat, dlat)
+    n_s = _cells(bbox.sw_lat - union.sw_lat, dlat)
+    n_e = _cells(union.ne_lon - bbox.ne_lon, dlon)
+    n_w = _cells(bbox.sw_lon - union.sw_lon, dlon)
+
+    capped = False
+    budget = max_res - R
+    need   = max(n_n + n_s, n_e + n_w)
+    if need > budget:
+        capped = True
+        if budget <= 0:
+            return bbox, R, False, True
+        f = budget / need
+        n_n, n_s, n_e, n_w = (int(math.floor(n * f)) for n in (n_n, n_s, n_e, n_w))
+
+    n_lat = R + n_n + n_s
+    n_lon = R + n_e + n_w
+    R_ext = max(n_lat, n_lon)
+    if R_ext == R:
+        return bbox, R, False, capped
+    # Pad the shorter axis (split evenly) so the grid is square in cells.
+    if n_lat < R_ext:
+        extra = R_ext - n_lat
+        n_n += extra // 2
+        n_s += extra - extra // 2
+    if n_lon < R_ext:
+        extra = R_ext - n_lon
+        n_e += extra // 2
+        n_w += extra - extra // 2
+
+    ext = BoundingBox(
+        bbox.sw_lat - n_s * dlat, bbox.sw_lon - n_w * dlon,
+        bbox.ne_lat + n_n * dlat, bbox.ne_lon + n_e * dlon,
+    )
+    return ext, R_ext, True, capped
+
+
+def _crop_grid_to_bbox(grid: np.ndarray, ext: BoundingBox,
+                       bbox: BoundingBox, R: int) -> np.ndarray:
+    """
+    Cut the window covering `bbox` out of a raster that covers `ext`
+    (row 0 = north), then resample (nearest) to R×R if the window is not
+    already exactly that size.
+    """
+    H, W     = grid.shape
+    lat_span = ext.ne_lat - ext.sw_lat
+    lon_span = ext.ne_lon - ext.sw_lon
+    r0 = int(round((ext.ne_lat - bbox.ne_lat) / lat_span * H))
+    r1 = int(round((ext.ne_lat - bbox.sw_lat) / lat_span * H))
+    c0 = int(round((bbox.sw_lon - ext.sw_lon) / lon_span * W))
+    c1 = int(round((bbox.ne_lon - ext.sw_lon) / lon_span * W))
+    r0, r1 = max(0, r0), min(H, max(r1, r0 + 1))
+    c0, c1 = max(0, c0), min(W, max(c1, c0 + 1))
+    sub = grid[r0:r1, c0:c1]
+    if sub.shape != (R, R):
+        rows = np.minimum(((np.arange(R) + 0.5) * sub.shape[0] / R).astype(int), sub.shape[0] - 1)
+        cols = np.minimum(((np.arange(R) + 0.5) * sub.shape[1] / R).astype(int), sub.shape[1] - 1)
+        sub = sub[np.ix_(rows, cols)]
+    return np.ascontiguousarray(sub, dtype=np.float32)
+
+
+def _grid_summary(grid: np.ndarray, threshold: float) -> dict:
+    """Threshold-based distribution + RSSI avg/max/min over cells with any signal."""
+    dist = level_distribution_from_grid(grid, threshold)
+    with np.errstate(invalid="ignore"):
+        any_sig = grid[~np.isnan(grid) & (grid > ANY_SIGNAL_DBM)]
+    dist["rssi_avg"] = round(float(np.mean(any_sig)), 1) if any_sig.size else 0.0
+    dist["rssi_max"] = round(float(np.max(any_sig)),  1) if any_sig.size else 0.0
+    dist["rssi_min"] = round(float(np.min(any_sig)),  1) if any_sig.size else 0.0
+    # Risk input: minimum over ALL in-radius cells, including "none" (≤ -110 dBm)
+    finite = grid[~np.isnan(grid)]
+    dist["rssi_min_all"] = round(float(np.min(finite)), 1) if finite.size else None
+    return dist
+
+
+def _bbox_sides_km(bbox: BoundingBox) -> Tuple[float, float]:
+    """(north-south, east-west) side lengths of a bbox in km."""
+    mid_lat = (bbox.sw_lat + bbox.ne_lat) / 2.0
+    return ((bbox.ne_lat - bbox.sw_lat) * M_PER_DEG_LAT / 1000.0,
+            (bbox.ne_lon - bbox.sw_lon) * _m_per_deg_lon(mid_lat) / 1000.0)
+
+
+def _validate_bbox(sw_lat: float, sw_lon: float, ne_lat: float, ne_lon: float) -> BoundingBox:
+    """400 on inverted bbox, 400 if either side exceeds MAX_BBOX_SPAN_KM."""
+    if sw_lat >= ne_lat or sw_lon >= ne_lon:
+        raise HTTPException(400, detail="גבולות תא שטח לא תקינים")
+    bbox = BoundingBox(sw_lat, sw_lon, ne_lat, ne_lon)
+    ns, ew = _bbox_sides_km(bbox)
+    limit = float(settings.MAX_BBOX_SPAN_KM)
+    if ns > limit or ew > limit:
+        raise HTTPException(
+            400,
+            detail=(f"תא השטח גדול מדי ({max(ns, ew):.0f} ק\"מ) – "
+                    f"אורך צלע מרבי {limit:.0f} ק\"מ. יש להקטין את האזור."),
+        )
+    return bbox
+
+
+def _fetch_dem(bbox: BoundingBox, width: int, height: int) -> Optional[ElevationGrid]:
+    """fetch_elevation_grid_ex with DemAreaTooLarge → HTTP 413 (Hebrew detail)."""
+    try:
+        return fetch_elevation_grid_ex(bbox.sw_lat, bbox.sw_lon, bbox.ne_lat, bbox.ne_lon,
+                                       out_width=width, out_height=height)
+    except DemAreaTooLarge as exc:
+        raise HTTPException(413, detail=exc.message_he)
+
+
+SITE_ELEV_UNKNOWN_WARNING = (
+    "גובה האתר מעל פני הים אינו ידוע (לא נמצאו נתוני גבהים במיקום האתר) – "
+    "המשדר הוצב בגובה 0 מ'. התוצאה עלולה להיות שגויה; יש לעדכן את מיקום/גובה האתר."
+)
+
+
+def _resolve_site_elevation(
+    site: Site, eg: Optional[ElevationGrid], grid_bbox: BoundingBox,
+) -> Tuple[float, Optional[str], str]:
+    """
+    Ground elevation (m ASL) of the transmitter site.
+
+    Returns (elevation_m, warning | None, source) where source is
+    "site" (stored value), "dem" (sampled from the analysis DEM grid) or
+    "unknown" (0.0 with a warning). Never silently uses 0 m when the DEM has
+    real terrain at the site.
+    """
+    if site.elevation_m is not None:
+        return float(site.elevation_m), None, "site"
+    if eg is not None:
+        elev = eg.elev
+        H, W = elev.shape
+        b    = grid_bbox
+        if b.sw_lat <= site.lat <= b.ne_lat and b.sw_lon <= site.lon <= b.ne_lon:
+            # cell-centre convention: cell i covers [i, i+1) → centre at i + 0.5
+            rf = (b.ne_lat - site.lat) / (b.ne_lat - b.sw_lat) * H - 0.5
+            cf = (site.lon - b.sw_lon) / (b.ne_lon - b.sw_lon) * W - 0.5
+            rf = min(max(rf, 0.0), H - 1.0)
+            cf = min(max(cf, 0.0), W - 1.0)
+            r0, c0 = int(math.floor(rf)), int(math.floor(cf))
+            r1, c1 = min(r0 + 1, H - 1), min(c0 + 1, W - 1)
+            fr, fc = rf - r0, cf - c0
+            v = (elev[r0, c0] * (1 - fr) * (1 - fc) + elev[r0, c1] * (1 - fr) * fc
+                 + elev[r1, c0] * fr * (1 - fc) + elev[r1, c1] * fr * fc)
+            if np.isfinite(v):
+                return round(float(v), 1), None, "dem"
+    log.warning("site %s: elevation unknown – transmitter placed at 0 m ASL", site.id)
+    return 0.0, SITE_ELEV_UNKNOWN_WARNING, "unknown"
+
+
+# ── Result helpers ────────────────────────────────────────────────────────────
+
+def _diffraction_method_from_model(model: Optional[str]) -> Optional[str]:
+    if not model:
+        return None
+    if "Deygout" in model:
+        return "deygout"
+    if "single knife-edge" in model:
+        return "single"
+    return None
+
+
+def _result_bbox(result: CoverageResult) -> BoundingBox:
+    return BoundingBox(result.poly_sw_lat, result.poly_sw_lon,
+                       result.poly_ne_lat, result.poly_ne_lon)
+
+
+def _result_warnings(result: CoverageResult, dem_extension_capped: bool = False) -> List[str]:
+    """Hebrew data-quality warnings for a stored result."""
+    if result.rssi_raster is None:
+        return [
+            "תוצאה ממנוע קודם: אחוז הכיסוי חושב לפי 'כל אות' (מעל ‎-110 dBm) ולא לפי סף הקבלה, "
+            "ואיכות נתוני הגבהים אינה ידועה. מומלץ להריץ את הניתוח מחדש."
+        ]
+    warnings: List[str] = []
+    if result.dem_source != DEM_SOURCE_TERRARIUM:
+        warnings.append(
+            "החישוב בוצע ללא נתוני טופוגרפיה אמיתיים (מודל סימולציה בלבד) – "
+            "אין להסתמך על התוצאה לתכנון מבצעי. יש להריץ מחדש כאשר נתוני הגבהים זמינים."
+        )
+    elif result.dem_valid_pct is not None and result.dem_valid_pct < 95.0:
+        warnings.append(
+            f"נתוני הגבהים חלקיים ({result.dem_valid_pct:.1f}% מהשטח) – באזורים ללא נתונים "
+            "הונח שטח מישורי, ולכן הכיסוי שם עשוי להיות אופטימי."
+        )
+    if dem_extension_capped:
+        warnings.append(
+            "האתר רחוק מתא השטח: הטופוגרפיה בין האתר לתא השטח נכללה בחישוב באופן חלקי בלבד "
+            "(מגבלת גודל רשת). חסימות בקטע הרחוק לא נלקחו בחשבון."
+        )
+    return warnings
+
+
+def _decode_raster(result: CoverageResult) -> Optional[np.ndarray]:
+    if result.rssi_raster is None:
+        return None
+    try:
+        return decode_rssi_grid(bytes(result.rssi_raster))
+    except Exception as exc:
+        log.warning("result %s: corrupt rssi_raster: %s", result.id, exc)
+        return None
+
+
+def _load_legacy_geojson(result: CoverageResult) -> Optional[dict]:
+    if result.geojson_path and os.path.exists(result.geojson_path):
+        with open(result.geojson_path) as f:
+            return json.load(f)
+    return None
+
+
+def _risk_rssi_min(result: CoverageResult) -> Optional[float]:
+    """Risk input: rssi_min_all (all in-radius cells); legacy rows fall back to rssi_min."""
+    return result.rssi_min_all if result.rssi_min_all is not None else result.rssi_min
+
+
+def _result_out(
+    result: CoverageResult,
+    grid: Optional[np.ndarray] = None,
+    dem_extended: Optional[bool] = None,
+    dem_extension_capped: bool = False,
+    extra_warnings: Optional[List[str]] = None,
+) -> dict:
+    """Serialise a CoverageResult for /analyze and /result/{id} (no GeoJSON)."""
+    level_distribution = None
+    if grid is None:
+        grid = _decode_raster(result)
+    if grid is not None:
+        thr = result.threshold_dbm if result.threshold_dbm is not None else -110.0
+        level_distribution = level_distribution_from_grid(grid, thr)["level_distribution"]
+    risk_level, risk_score = assess_risk(
+        result.covered_pct or 0.0, weak_pct=result.weak_pct or 0.0,
+        rssi_min=_risk_rssi_min(result),
+    )
+    return {
+        "id":                     result.id,
+        "site_id":                result.site_id,
+        "mode":                   result.mode.value,
+        "covered_pct":            result.covered_pct,
+        "rssi_avg":               result.rssi_avg,
+        "rssi_max":               result.rssi_max,
+        "rssi_min":               result.rssi_min,
+        "rssi_min_all":           result.rssi_min_all,
+        "duration_sec":           result.duration_sec,
+        "created_at":             result.created_at,
+        "sw_lat":                 result.poly_sw_lat,
+        "sw_lon":                 result.poly_sw_lon,
+        "ne_lat":                 result.poly_ne_lat,
+        "ne_lon":                 result.poly_ne_lon,
+        "covered_pct_any_signal": result.covered_pct_any_signal,
+        "threshold_dbm":          result.threshold_dbm,
+        "weak_pct":               result.weak_pct,
+        "level_distribution":     level_distribution,
+        "dem_source":             result.dem_source,
+        "dem_valid_pct":          result.dem_valid_pct,
+        "dem_m_per_px":           result.dem_m_per_px,
+        "resolution":             result.resolution,
+        "model":                  result.model,
+        "diffraction_method":     _diffraction_method_from_model(result.model),
+        "dem_extended":           dem_extended,
+        "has_raster":             result.rssi_raster is not None,
+        "risk_level":             risk_level,
+        "risk_score":             risk_score,
+        "warnings":               (_result_warnings(result, dem_extension_capped)
+                                   + list(extra_warnings or [])),
+        "geojson":                None,
+    }
+
+
+def _result_scalars(r: CoverageResult, has_raster: bool) -> dict:
+    """
+    New scalar fields shared by /history and / listings. `has_raster` comes
+    from a SQL expression so the (deferred) raster blob is never loaded.
+    """
+    return {
+        "rssi_min_all":           r.rssi_min_all,
+        "covered_pct_any_signal": r.covered_pct_any_signal,
+        "threshold_dbm":          r.threshold_dbm,
+        "weak_pct":               r.weak_pct,
+        "dem_source":             r.dem_source,
+        "dem_valid_pct":          r.dem_valid_pct,
+        "dem_m_per_px":           r.dem_m_per_px,
+        "resolution":             r.resolution,
+        "model":                  r.model,
+        "diffraction_method":     _diffraction_method_from_model(r.model),
+        "has_raster":             bool(has_raster),
+    }
+
+
+def _build_site_params(site: Site, cap_radius: bool = False) -> SiteParams:
+    """
+    Helper: convert a Site ORM object to the engine's SiteParams dataclass.
+    elevation_m is a placeholder (0.0) when unknown — callers replace it via
+    _resolve_site_elevation once the DEM grid is available.
+    """
+    max_radius = site.max_radius
+    if cap_radius:
+        # Cap analysis radius at the system maximum to prevent runaway jobs
+        max_radius = min(site.max_radius, settings.MAX_ANALYSIS_RADIUS_KM)
+    return SiteParams(
+        lat=site.lat, lon=site.lon,
+        ant_height=site.ant_height,
+        elevation_m=site.elevation_m if site.elevation_m is not None else 0.0,
+        frequency=site.frequency,
+        tx_power=site.tx_power,
+        rx_threshold=site.rx_threshold,
+        max_radius=max_radius,
+    )
+
+
 # ── Coverage Analysis ─────────────────────────────────────────────────────────
 
 @router.post("/analyze", response_model=CoverageResultOut)
@@ -89,78 +524,86 @@ def analyze(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("ADMIN", "OPERATOR")),
 ):
-    """Run coverage analysis over a bounding box and persist the result."""
+    """
+    Run coverage analysis over a bounding box and persist the RSSI raster.
+
+    Terrain between a site OUTSIDE the bbox and the bbox itself is included:
+    the analysis runs over the bbox extended (by whole cells) to contain the
+    site + 0.5 km, and the resulting raster is cropped back to the user bbox.
+    """
+    t0 = time.time()
     site = db.query(Site).filter(Site.id == body.site_id).first()
     if not site:
         raise HTTPException(404, detail="אתר לא נמצא")
-    if body.sw_lat >= body.ne_lat or body.sw_lon >= body.ne_lon:
-        raise HTTPException(400, detail="גבולות תא שטח לא תקינים")
+    bbox = _validate_bbox(body.sw_lat, body.sw_lon, body.ne_lat, body.ne_lon)
+    sp   = _build_site_params(site, cap_radius=True)
 
-    sp = SiteParams(
-        lat=site.lat, lon=site.lon,
-        ant_height=site.ant_height,
-        elevation_m=site.elevation_m or 0.0,
-        frequency=site.frequency,
-        tx_power=site.tx_power,
-        rx_threshold=site.rx_threshold,
-        # Cap analysis radius at the system maximum to prevent runaway jobs
-        max_radius=min(site.max_radius, settings.MAX_ANALYSIS_RADIUS_KM),
-    )
-    bbox = BoundingBox(body.sw_lat, body.sw_lon, body.ne_lat, body.ne_lon)
+    # ── Grid resolution (explicit or adaptive) ────────────────────────────────
+    if body.resolution:
+        R = int(min(max(body.resolution, CLIENT_RES_MIN), CLIENT_RES_MAX))
+    else:
+        union = _site_union_bbox(bbox, sp.lat, sp.lon)
+        R = adaptive_resolution(bbox, _estimate_dem_m_per_px(union))
 
-    # Fetch real terrain elevation grid for the analysis bbox.
-    # Falls back to None automatically if tiles are unavailable (network error),
-    # in which case the engine uses the pseudo-random fallback.
-    res = body.resolution or settings.COVERAGE_GRID_RESOLUTION
-    elev_grid = fetch_elevation_grid(
-        body.sw_lat, body.sw_lon,
-        body.ne_lat, body.ne_lon,
-        out_width=res, out_height=res,
+    # ── Analysis bbox: user bbox extended to include the site ─────────────────
+    ext, R_ext, extended, capped = _extend_bbox_to_site(
+        bbox, sp.lat, sp.lon, R, max(settings.MAX_GRID_RESOLUTION, R),
     )
 
-    stats = calculate_coverage(sp, bbox, body.mode.value, res, elev_grid=elev_grid)
+    # Real terrain for the (extended) analysis bbox at the analysis cell size.
+    # None → engine uses the labelled pseudo-random fallback (dem_source="none").
+    eg = _fetch_dem(ext, R_ext, R_ext)
 
-    # Persist GeoJSON to disk for later retrieval without re-computing
-    os.makedirs(settings.RESULTS_DIR, exist_ok=True)
-    geojson_path = os.path.join(
-        settings.RESULTS_DIR,
-        f"site{site.id}_{body.mode.value}_{int(datetime.utcnow().timestamp())}.geojson",
+    # Transmitter ground height: stored value, else sampled from this DEM grid
+    site_elev, elev_warning, _src = _resolve_site_elevation(site, eg, ext)
+    sp = dc_replace(sp, elevation_m=site_elev)
+
+    stats = calculate_coverage(
+        sp, ext, body.mode.value, R_ext,
+        elev_grid=eg.elev if eg is not None else None,
+        build_geojson=False,
     )
-    with open(geojson_path, "w") as f:
-        json.dump(stats.geojson, f)
 
+    grid       = stats.rssi_grid
+    valid_mask = stats.valid_mask
+    if extended:
+        grid = _crop_grid_to_bbox(grid, ext, bbox, R)
+        if valid_mask is not None:
+            valid_mask = _crop_grid_to_bbox(
+                valid_mask.astype(np.float32), ext, bbox, R) > 0.5
+    summary = _grid_summary(grid, sp.rx_threshold)
+    # DEM completeness of the USER's bbox (not the extended analysis grid)
+    dem_valid_pct = (round(float(valid_mask.mean()) * 100, 1)
+                     if valid_mask is not None else stats.dem_valid_pct)
+
+    model = stats.metadata.get("model")
     result = CoverageResult(
         site_id=site.id,
         mode=body.mode,
         poly_sw_lat=body.sw_lat, poly_sw_lon=body.sw_lon,
         poly_ne_lat=body.ne_lat, poly_ne_lon=body.ne_lon,
-        covered_pct=stats.covered_pct,
-        rssi_avg=stats.rssi_avg,
-        rssi_max=stats.rssi_max,
-        rssi_min=stats.rssi_min,
-        duration_sec=stats.duration_sec,
-        geojson_path=geojson_path,
+        covered_pct=summary["covered_pct"],
+        rssi_avg=summary["rssi_avg"],
+        rssi_max=summary["rssi_max"],
+        rssi_min=summary["rssi_min"],
+        rssi_min_all=summary["rssi_min_all"],
+        covered_pct_any_signal=summary["covered_pct_any_signal"],
+        weak_pct=summary["weak_pct"],
+        threshold_dbm=sp.rx_threshold,
+        rssi_raster=encode_rssi_grid(grid),
+        resolution=R,
+        dem_source=stats.dem_source,
+        dem_valid_pct=dem_valid_pct,
+        dem_m_per_px=round(eg.m_per_px, 2) if eg is not None else None,
+        model=model[:128] if model else None,
+        duration_sec=max(round(time.time() - t0, 2), 0.01),
     )
     db.add(result)
     db.commit()
     db.refresh(result)
 
-    return {
-        "id":           result.id,
-        "site_id":      result.site_id,
-        "mode":         result.mode.value,
-        "covered_pct":  result.covered_pct,
-        "rssi_avg":     result.rssi_avg,
-        "rssi_max":     result.rssi_max,
-        "rssi_min":     result.rssi_min,
-        "duration_sec": result.duration_sec,
-        "created_at":   result.created_at,
-        "geojson":      stats.geojson,
-        "sw_lat":       body.sw_lat,
-        "sw_lon":       body.sw_lon,
-        "ne_lat":       body.ne_lat,
-        "ne_lon":       body.ne_lon,
-    }
+    return _result_out(result, grid=grid, dem_extended=extended, dem_extension_capped=capped,
+                       extra_warnings=[elev_warning] if elev_warning else None)
 
 
 @router.get("/result/{result_id}", response_model=CoverageResultOut)
@@ -169,28 +612,11 @@ def get_result(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Return a stored result with its full GeoJSON (used to reload onto the map)."""
+    """Return a stored result's statistics (no GeoJSON — use /png or /geojson)."""
     result = db.query(CoverageResult).filter(CoverageResult.id == result_id).first()
     if not result:
         raise HTTPException(404, detail="תוצאה לא נמצאה")
-
-    geojson: dict = {}
-    if result.geojson_path and os.path.exists(result.geojson_path):
-        with open(result.geojson_path) as f:
-            geojson = json.load(f)
-
-    return {
-        "id":           result.id,
-        "site_id":      result.site_id,
-        "mode":         result.mode.value,
-        "covered_pct":  result.covered_pct,
-        "rssi_avg":     result.rssi_avg,
-        "rssi_max":     result.rssi_max,
-        "rssi_min":     result.rssi_min,
-        "duration_sec": result.duration_sec,
-        "created_at":   result.created_at,
-        "geojson":      geojson,
-    }
+    return _result_out(result)
 
 
 @router.delete("/result/{result_id}", status_code=204)
@@ -199,7 +625,7 @@ def delete_result(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("ADMIN", "OPERATOR")),
 ):
-    """Delete a result record and its associated GeoJSON file."""
+    """Delete a result record (and its legacy GeoJSON file, if any)."""
     result = db.query(CoverageResult).filter(CoverageResult.id == result_id).first()
     if not result:
         raise HTTPException(404, detail="תוצאה לא נמצאה")
@@ -214,6 +640,10 @@ def delete_result(
 
 # ── History / Listing ─────────────────────────────────────────────────────────
 
+# rssi_raster is deferred on the model; selecting this expression tells us
+# whether a raster exists without transferring the blob.
+_HAS_RASTER = CoverageResult.rssi_raster.isnot(None).label("has_raster")
+
 @router.get("/history/{site_id}")
 def history(
     site_id: int,
@@ -222,7 +652,7 @@ def history(
 ):
     """Return the 20 most recent analyses for a single site."""
     results = (
-        db.query(CoverageResult)
+        db.query(CoverageResult, _HAS_RASTER)
         .filter(CoverageResult.site_id == site_id)
         .order_by(CoverageResult.created_at.desc())
         .limit(20)
@@ -234,10 +664,13 @@ def history(
             "mode":         r.mode.value,
             "covered_pct":  r.covered_pct,
             "rssi_avg":     r.rssi_avg,
+            "rssi_max":     r.rssi_max,
+            "rssi_min":     r.rssi_min,
             "created_at":   r.created_at,
             "duration_sec": r.duration_sec,
+            **_result_scalars(r, has_raster),
         }
-        for r in results
+        for r, has_raster in results
     ]
 
 
@@ -248,7 +681,7 @@ def list_all(
 ):
     """Return up to 100 recent results across all sites (history panel)."""
     results = (
-        db.query(CoverageResult)
+        db.query(CoverageResult, _HAS_RASTER)
         .options(joinedload(CoverageResult.site))
         .order_by(CoverageResult.created_at.desc())
         .limit(100)
@@ -268,12 +701,121 @@ def list_all(
             "created_at":   r.created_at,
             "poly_sw_lat":  r.poly_sw_lat, "poly_sw_lon": r.poly_sw_lon,
             "poly_ne_lat":  r.poly_ne_lat, "poly_ne_lon": r.poly_ne_lon,
+            **_result_scalars(r, has_raster),
         }
-        for r in results
+        for r, has_raster in results
     ]
 
 
 # ── Analysis Report ───────────────────────────────────────────────────────────
+
+def _legacy_geojson_to_grid(geojson: dict, bbox: BoundingBox) -> Optional[np.ndarray]:
+    """
+    Rasterise a legacy GeoJSON FeatureCollection back into an RSSI grid.
+    Legacy files omit "none" cells, so cells without a feature are NaN
+    (unknown) – statistics then cover only cells that had some signal.
+    """
+    feats = geojson.get("features") or []
+    if not feats:
+        return None
+    try:
+        ring = feats[0]["geometry"]["coordinates"][0]
+        dlat = max(p[1] for p in ring) - min(p[1] for p in ring)
+        dlon = max(p[0] for p in ring) - min(p[0] for p in ring)
+        H = max(1, int(round((bbox.ne_lat - bbox.sw_lat) / dlat)))
+        W = max(1, int(round((bbox.ne_lon - bbox.sw_lon) / dlon)))
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    grid = np.full((H, W), np.nan, dtype=np.float32)
+    for f in feats:
+        try:
+            ring = f["geometry"]["coordinates"][0]
+            lat  = sum(p[1] for p in ring[:4]) / 4.0
+            lon  = sum(p[0] for p in ring[:4]) / 4.0
+            rssi = float(f["properties"]["rssi"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        r = int((bbox.ne_lat - lat) / dlat)
+        c = int((lon - bbox.sw_lon) / dlon)
+        if 0 <= r < H and 0 <= c < W:
+            grid[r, c] = rssi
+    return grid
+
+
+def dead_zone_clusters(
+    grid: np.ndarray, bbox: BoundingBox, threshold: float,
+) -> List[dict]:
+    """
+    Connected components (8-connectivity) of in-radius cells below threshold.
+
+    O(cells): one BFS pass over the boolean mask, then per-cluster aggregates
+    with np.bincount. Returns all clusters sorted by cell_count (desc) with
+    centroid, cell_count, approx area_km2, rssi_avg, rssi_min and severity
+    ("none" if any cell has no usable signal (≤ −110 dBm), else "marginal" –
+    i.e. some signal but below threshold).
+    """
+    H, W = grid.shape
+    with np.errstate(invalid="ignore"):
+        dead = (~np.isnan(grid)) & (grid < threshold)
+    if not dead.any():
+        return []
+
+    flat_dead = dead.ravel().tolist()
+    labels    = np.zeros(H * W, dtype=np.int32)
+    lab_list  = [0] * (H * W)
+    n_labels  = 0
+    neigh     = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+    for start in np.flatnonzero(dead.ravel()).tolist():
+        if lab_list[start]:
+            continue
+        n_labels += 1
+        lab_list[start] = n_labels
+        q = deque([start])
+        while q:
+            i = q.popleft()
+            r, c = divmod(i, W)
+            for dr, dc in neigh:
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < H and 0 <= cc < W:
+                    j = rr * W + cc
+                    if flat_dead[j] and not lab_list[j]:
+                        lab_list[j] = n_labels
+                        q.append(j)
+    labels[:] = lab_list
+
+    idx  = np.flatnonzero(labels)
+    lab  = labels[idx]
+    rows = (idx // W).astype(np.float64)
+    cols = (idx %  W).astype(np.float64)
+    vals = grid.ravel()[idx].astype(np.float64)
+    n    = n_labels + 1
+    count   = np.bincount(lab, minlength=n)
+    sum_r   = np.bincount(lab, weights=rows, minlength=n)
+    sum_c   = np.bincount(lab, weights=cols, minlength=n)
+    sum_v   = np.bincount(lab, weights=vals, minlength=n)
+    min_v   = np.full(n, np.inf)
+    np.minimum.at(min_v, lab, vals)
+
+    dlat    = (bbox.ne_lat - bbox.sw_lat) / H
+    dlon    = (bbox.ne_lon - bbox.sw_lon) / W
+    mid_lat = (bbox.sw_lat + bbox.ne_lat) / 2.0
+    cell_km2 = (dlat * M_PER_DEG_LAT / 1000.0) * (dlon * _m_per_deg_lon(mid_lat) / 1000.0)
+
+    clusters = []
+    for k in range(1, n):
+        cnt = int(count[k])
+        clusters.append({
+            "centroid_lat": round(bbox.ne_lat - (sum_r[k] / cnt + 0.5) * dlat, 5),
+            "centroid_lon": round(bbox.sw_lon + (sum_c[k] / cnt + 0.5) * dlon, 5),
+            "cell_count":   cnt,
+            "area_km2":     round(cnt * cell_km2, 3),
+            "rssi_avg":     round(float(sum_v[k] / cnt), 1),
+            "rssi_min":     round(float(min_v[k]), 1),
+            "severity":     "none" if min_v[k] <= ANY_SIGNAL_DBM else "marginal",
+        })
+    clusters.sort(key=lambda c: c["cell_count"], reverse=True)
+    return clusters
+
 
 @router.get("/result/{result_id}/report")
 def get_report(
@@ -283,8 +825,13 @@ def get_report(
 ):
     """
     Return a comprehensive analysis report for a stored result.
-    Includes: signal distribution, propagation model data,
-    risk scoring, dead-zone clustering, and operational recommendations.
+    Includes: signal distribution, propagation model data, data quality,
+    risk scoring (risk.assess_risk), dead-zone clustering, and operational
+    recommendations (risk.build_area_recommendations).
+
+    Legacy rows (GeoJSON only): the GeoJSON is rasterised back to a grid in
+    which "none" cells are unknown, so distribution / clusters cover only the
+    cells that had some signal; covered_pct is the stored legacy value.
     """
     result = (
         db.query(CoverageResult)
@@ -295,165 +842,100 @@ def get_report(
     if not result:
         raise HTTPException(404, detail="תוצאה לא נמצאה")
 
-    site = result.site
+    site   = result.site
+    bbox   = _result_bbox(result)
+    legacy = result.rssi_raster is None
+    thr    = result.threshold_dbm if result.threshold_dbm is not None else site.rx_threshold
 
-    # ── Signal distribution from stored GeoJSON ───────────────────────────────
-    geojson = {}
-    level_counts = {"excellent": 0, "good": 0, "medium": 0, "weak": 0, "marginal": 0}
-    if result.geojson_path and os.path.exists(result.geojson_path):
-        with open(result.geojson_path) as f:
-            geojson = json.load(f)
-        for feat in geojson.get("features", []):
-            lvl = feat.get("properties", {}).get("level")
-            if lvl in level_counts:
-                level_counts[lvl] += 1
+    grid = _decode_raster(result)
+    if grid is None and legacy:
+        gj = _load_legacy_geojson(result)
+        grid = _legacy_geojson_to_grid(gj, bbox) if gj else None
 
-    total_covered = sum(level_counts.values())
-    signal_distribution = {
-        lvl: {
-            "count": cnt,
-            "pct":   round(cnt / total_covered * 100, 1) if total_covered else 0,
-        }
-        for lvl, cnt in level_counts.items()
-    }
+    # ── Signal distribution + dead zones from the raster ─────────────────────
+    if grid is not None:
+        dist                = level_distribution_from_grid(grid, thr)
+        signal_distribution = dist["level_distribution"]
+        weak_pct            = dist["weak_pct"]
+        covered             = result.covered_pct if legacy else dist["covered_pct"]
+        clusters            = dead_zone_clusters(grid, bbox, thr)
+    else:
+        signal_distribution = {}
+        weak_pct            = result.weak_pct or 0.0
+        covered             = result.covered_pct or 0.0
+        clusters            = []
+    covered = covered if covered is not None else 0.0
 
-    # ── Propagation helpers (mirror of coverage_engine formulas) ──────────────
-    def _fspl_db(dist_km: float, freq_mhz: int) -> float:
-        """Free Space Path Loss: FSPL = 20log(d_m) + 20log(f_hz) - 147.55"""
-        if dist_km <= 0:
-            return 0.0
-        return (20 * math.log10(dist_km * 1000)
-                + 20 * math.log10(freq_mhz * 1e6)
-                - 147.55)
+    # ── Risk (single source of truth: services/risk.py) ──────────────────────
+    risk_rssi_min = _risk_rssi_min(result)
+    risk_level, risk_score = assess_risk(
+        covered, weak_pct=weak_pct, rssi_min=risk_rssi_min,
+    )
+    summary = operational_summary(risk_level)
 
-    height_gain    = 20 * math.log10(max(site.ant_height, 1.5) / 1.5)
-    TERRAIN_MARGIN = 7.5  # dB assumed average terrain loss for theoretical radii
+    has_dem = result.dem_source == DEM_SOURCE_TERRARIUM
+    recs = build_area_recommendations(
+        site, covered, weak_pct, risk_rssi_min, len(clusters),
+        # legacy rows: DEM provenance unknown → the legacy warning below
+        # replaces the "no DEM" warning
+        dem_source=DEM_SOURCE_TERRARIUM if legacy else result.dem_source,
+        dem_valid_pct=None if legacy else result.dem_valid_pct,
+        mode=result.mode.value,
+    )
+    warnings = _result_warnings(result)
+    if legacy:
+        recs = warnings + recs
 
-    level_thresholds = {
-        "excellent": -70, "good": -80, "medium": -90,
-        "weak": -100, "marginal": -110,
-    }
+    # ── Propagation (engine formulas) ─────────────────────────────────────────
+    h_gain = effective_height_gain_db(site.ant_height, has_dem)
 
     def _max_radius_km(threshold: float) -> float:
-        """Theoretical maximum range for a given RSSI threshold."""
-        max_fspl  = site.tx_power + height_gain - threshold - TERRAIN_MARGIN
-        log_d_m   = (max_fspl + 147.55 - 20 * math.log10(site.frequency * 1e6)) / 20
-        d_km      = (10 ** log_d_m) / 1000
-        return round(min(d_km, site.max_radius), 2)
+        """Theoretical range for a given RSSI threshold (FSPL + assumed terrain margin)."""
+        max_fspl = site.tx_power + h_gain - threshold - TERRAIN_MARGIN_DB
+        log_d_m  = (max_fspl + 147.55 - 20 * math.log10(site.frequency * 1e6)) / 20
+        return round(min((10 ** log_d_m) / 1000, site.max_radius), 2)
 
-    theoretical_radii = {lvl: _max_radius_km(thr) for lvl, thr in level_thresholds.items()}
-    fspl_table = {
-        f"{d}km": round(_fspl_db(d, site.frequency), 1)
-        for d in [0.5, 1, 2, 5, 10, 20]
+    theoretical_radii = {lvl: _max_radius_km(t) for lvl, t in LEVEL_LOWER_BOUND_DBM.items()}
+    theoretical_radii["rx_threshold"] = _max_radius_km(thr)
+    fspl_table = {f"{d}km": round(fspl_db(d, site.frequency), 1) for d in (0.5, 1, 2, 5, 10, 20)}
+
+    model = result.model or (
+        "FSPL + ITU-R P.526 knife-edge (מנוע קודם)" if legacy else "לא ידוע"
+    )
+    data_quality = {
+        "dem_source":         result.dem_source,
+        "dem_valid_pct":      result.dem_valid_pct,
+        "dem_m_per_px":       result.dem_m_per_px,
+        "resolution":         result.resolution if result.resolution else (
+                                  grid.shape[0] if grid is not None else None),
+        "diffraction_method": _diffraction_method_from_model(result.model),
     }
-
-    # ── Risk scoring ──────────────────────────────────────────────────────────
-    weak_pct = (signal_distribution.get("weak",     {}).get("pct", 0) +
-                signal_distribution.get("marginal", {}).get("pct", 0))
-    covered  = result.covered_pct
-
-    if   covered < 50 or result.rssi_min < -115 or weak_pct > 30:
-        risk_level, risk_score = "CRITICAL", 4
-    elif covered < 70 or result.rssi_min < -110 or weak_pct > 20:
-        risk_level, risk_score = "HIGH",     3
-    elif covered < 85 or result.rssi_min < -105 or weak_pct > 10:
-        risk_level, risk_score = "MEDIUM",   2
-    else:
-        risk_level, risk_score = "LOW",      1
-
-    # ── Dead-zone clustering (simple proximity-based) ─────────────────────────
-    none_cells = []
-    for feat in geojson.get("features", []):
-        props = feat.get("properties", {})
-        if props.get("level") in ("none", "marginal"):
-            coords = feat.get("geometry", {}).get("coordinates", [[]])
-            pts = coords[0] if coords else []
-            if pts:
-                lats = [p[1] for p in pts]
-                lons = [p[0] for p in pts]
-                none_cells.append({
-                    "lat":   sum(lats) / len(lats),
-                    "lon":   sum(lons) / len(lons),
-                    "level": props.get("level"),
-                    "rssi":  props.get("rssi", -999),
-                })
-
-    def _cluster(cells, radius=0.02):
-        clusters, used = [], [False] * len(cells)
-        for i, c in enumerate(cells):
-            if used[i]:
-                continue
-            grp = [c]
-            used[i] = True
-            for j, c2 in enumerate(cells):
-                if (not used[j]
-                        and abs(c2["lat"] - c["lat"]) < radius
-                        and abs(c2["lon"] - c["lon"]) < radius):
-                    grp.append(c2)
-                    used[j] = True
-            clusters.append(grp)
-        return clusters
-
-    dead_clusters = []
-    if none_cells:
-        for grp in sorted(_cluster(none_cells), key=lambda g: len(g), reverse=True):
-            lats  = [c["lat"]  for c in grp]
-            lons  = [c["lon"]  for c in grp]
-            rssis = [c["rssi"] for c in grp]
-            dead_clusters.append({
-                "centroid_lat": round(sum(lats)  / len(lats),  5),
-                "centroid_lon": round(sum(lons)  / len(lons),  5),
-                "cell_count":   len(grp),
-                "severity":     "none" if any(c["level"] == "none" for c in grp) else "marginal",
-                "rssi_avg":     round(sum(rssis) / len(rssis), 1),
-            })
-
-    # ── Recommendations ───────────────────────────────────────────────────────
-    recs: list = []
-    if covered < 60:
-        recs.append("כיסוי הציר נמוך מ-60% – יש לשקול הוספת ממסר ביניים באזורי האפלה")
-    if covered < 85:
-        recs.append("מומלץ להגביה את האנטנה הראשית לשיפור הכיסוי השטחי")
-    if result.rssi_min < -105:
-        recs.append("עוצמת אות מינימלית נמוכה – יש לבחון גיבוי בתקשורת גרעינית או רדיו נייד")
-    if weak_pct > 15:
-        recs.append(f"כ-{round(weak_pct)}% מהאזור בעוצמת אות חלשה/שולית – מומלץ לתעד נקודות עיוורות")
-    if dead_clusters:
-        recs.append(f"זוהו {len(dead_clusters)} אשכולות אפלה – מומלץ ביצוע סיור שטח ובחינת נקודות ממסר")
-    if not recs:
-        recs.append("הכיסוי תקין – אין המלצות דחופות")
-
-    # ── Operational summary ───────────────────────────────────────────────────
-    if risk_level in ("CRITICAL", "HIGH"):
-        op_status     = "בעייתי"
-        op_conclusion = "כיסוי הרדיו באזור הניתוח בעייתי. נדרשת פעולה מיידית לשיפור הכיסוי."
-    elif risk_level == "MEDIUM":
-        op_status     = "גבולי"
-        op_conclusion = "כיסוי הרדיו באזור הניתוח גבולי. מומלץ ביצוע פעולות שיפור בהקדם."
-    else:
-        op_status     = "תקין"
-        op_conclusion = "כיסוי הרדיו באזור הניתוח תקין. אין צורך בפעולות מיידיות."
 
     return {
         "meta": {
-            "result_id":    result.id,
-            "site_name":    site.name,
-            "site_lat":     site.lat,
-            "site_lon":     site.lon,
-            "ant_height":   site.ant_height,
-            "frequency":    site.frequency,
-            "tx_power":     site.tx_power,
-            "rx_threshold": site.rx_threshold,
-            "max_radius":   site.max_radius,
-            "mode":         result.mode.value,
+            "result_id":     result.id,
+            "site_name":     site.name,
+            "site_lat":      site.lat,
+            "site_lon":      site.lon,
+            "ant_height":    site.ant_height,
+            "frequency":     site.frequency,
+            "tx_power":      site.tx_power,
+            "rx_threshold":  site.rx_threshold,
+            "threshold_dbm": thr,
+            "max_radius":    site.max_radius,
+            "mode":          result.mode.value,
             "analysis_date": result.created_at.isoformat(),
-            "duration_sec": result.duration_sec,
+            "duration_sec":  result.duration_sec,
+            "legacy":        legacy,
         },
         "macro": {
-            "covered_pct": result.covered_pct,
-            "rssi_avg":    result.rssi_avg,
-            "rssi_max":    result.rssi_max,
-            "rssi_min":    result.rssi_min,
+            "covered_pct":            covered,
+            "covered_pct_any_signal": result.covered_pct_any_signal,
+            "weak_pct":               weak_pct,
+            "rssi_avg":               result.rssi_avg,
+            "rssi_max":               result.rssi_max,
+            "rssi_min":               result.rssi_min,
+            "rssi_min_all":           result.rssi_min_all,
             "bbox": {
                 "sw_lat": result.poly_sw_lat, "sw_lon": result.poly_sw_lon,
                 "ne_lat": result.poly_ne_lat, "ne_lon": result.poly_ne_lon,
@@ -461,19 +943,18 @@ def get_report(
         },
         "signal_distribution": signal_distribution,
         "propagation": {
-            "model":   ("FSPL + ITU-R P.526 Knife-Edge Diffraction (DTM)" if result.mode.value == "DTM"
-                        else "FSPL + ITU-R P.526 Knife-Edge Diffraction + DSM Clutter"),
-            "formula": "RSSI(dBm) = Tx(dBm) – FSPL(d,f) – DiffractionLoss(ν) + HeightGain",
-            "height_gain_db":             round(height_gain, 2),
-            "terrain_margin_assumed_db":  TERRAIN_MARGIN,
-            "fspl_table_db":              fspl_table,
-            "theoretical_radii_km":       theoretical_radii,
+            "model":   model,
+            "formula": "RSSI(dBm) = Tx(dBm) – FSPL(d,f) – DiffractionLoss(Deygout, k=4/3) – Clutter + HeightGain",
+            "height_gain_db":            round(h_gain, 2),
+            "terrain_margin_assumed_db": TERRAIN_MARGIN_DB,
+            "fspl_table_db":             fspl_table,
+            "theoretical_radii_km":      theoretical_radii,
         },
         "operational_summary": {
-            "status":           op_status,
-            "conclusion":       op_conclusion,
-            "covered_pct":      result.covered_pct,
-            "dead_zones_count": len(dead_clusters),
+            "status":           summary["status"],
+            "conclusion":       summary["conclusion"],
+            "covered_pct":      covered,
+            "dead_zones_count": len(clusters),
             "rssi_avg":         result.rssi_avg,
             "rssi_min":         result.rssi_min,
             "rssi_max":         result.rssi_max,
@@ -482,14 +963,16 @@ def get_report(
             "level": risk_level,
             "score": risk_score,
         },
-        "dead_zones_clusters": dead_clusters,
+        "dead_zones_clusters": clusters[:MAX_REPORT_CLUSTERS],
         "recommendations":     recs,
+        "data_quality":        data_quality,
+        "warnings":            warnings,
     }
 
 
 # ── Coverage PNG Renderer ─────────────────────────────────────────────────────
 
-# Maps coverage-level hex colors → RGBA tuples (alpha ≈ 63%)
+# Maps coverage-level hex colors → RGBA tuples (alpha ≈ 63%) — legacy renderer
 _COVERAGE_COLOR_MAP: dict[str, tuple[int, int, int, int]] = {
     "#00ff88": (0,   255, 136, 160),   # excellent
     "#7dff6b": (125, 255, 107, 160),   # good
@@ -507,10 +990,8 @@ def _render_coverage_png(
     height: int = 900,
 ) -> bytes:
     """
-    Render GeoJSON coverage cells to a pixel-perfect RGBA PNG.
-
-    Each cell is painted as a filled rectangle in the canvas array using numpy
-    slice assignment — no SVG, no per-polygon anti-aliasing gaps.
+    Legacy: render GeoJSON coverage cells to an RGBA PNG (rows without a raster).
+    Each cell is painted as a filled rectangle via numpy slice assignment.
     """
     canvas   = np.zeros((height, width, 4), dtype=np.uint8)
     lat_span = ne_lat - sw_lat
@@ -549,27 +1030,38 @@ def _render_coverage_png(
 @router.get("/result/{result_id}/png")
 def result_png(
     result_id: int,
-    sw_lat: float, sw_lon: float,
-    ne_lat: float, ne_lon: float,
-    width:  int = 900,
-    height: int = 900,
+    sw_lat: Optional[float] = None, sw_lon: Optional[float] = None,
+    ne_lat: Optional[float] = None, ne_lon: Optional[float] = None,
+    width:  int = Query(900, ge=1, le=MAX_PNG_SIDE),
+    height: int = Query(900, ge=1, le=MAX_PNG_SIDE),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """
     Render a stored coverage result as an RGBA PNG image overlay.
-    The client positions it with Leaflet's ImageOverlay using the same bbox.
+
+    The image ALWAYS covers the result's stored bbox (sw_lat…ne_lon in the
+    result JSON); the client positions it with Leaflet's ImageOverlay using
+    that bbox. The sw_lat/sw_lon/ne_lat/ne_lon query params are accepted for
+    backward compatibility but ignored for raster rows; legacy GeoJSON-only
+    rows use them if given (else the stored bbox).
     """
     result = db.query(CoverageResult).filter(CoverageResult.id == result_id).first()
     if not result:
         raise HTTPException(404, detail="תוצאה לא נמצאה")
-    if not result.geojson_path or not os.path.exists(result.geojson_path):
-        raise HTTPException(404, detail="קובץ GeoJSON לא נמצא")
 
-    with open(result.geojson_path) as f:
-        geojson = json.load(f)
+    grid = _decode_raster(result)
+    if grid is not None:
+        png = rssi_grid_to_png(grid, width, height)
+    else:
+        geojson = _load_legacy_geojson(result)
+        if geojson is None:
+            raise HTTPException(404, detail="נתוני כיסוי לא נמצאו")
+        b = _result_bbox(result)
+        if None in (sw_lat, sw_lon, ne_lat, ne_lon):
+            sw_lat, sw_lon, ne_lat, ne_lon = b.sw_lat, b.sw_lon, b.ne_lat, b.ne_lon
+        png = _render_coverage_png(geojson, sw_lat, sw_lon, ne_lat, ne_lon, width, height)
 
-    png = _render_coverage_png(geojson, sw_lat, sw_lon, ne_lat, ne_lon, width, height)
     return Response(
         content=png,
         media_type="image/png",
@@ -577,30 +1069,83 @@ def result_png(
     )
 
 
-# ── Cross-Section ─────────────────────────────────────────────────────────────
+@router.get("/result/{result_id}/geojson")
+def result_geojson(
+    result_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Download the result as a GeoJSON FeatureCollection (one square polygon per
+    cell with any signal), built on demand from the raster. Legacy rows return
+    their stored file.
+    """
+    result = (
+        db.query(CoverageResult)
+        .options(joinedload(CoverageResult.site))
+        .filter(CoverageResult.id == result_id)
+        .first()
+    )
+    if not result:
+        raise HTTPException(404, detail="תוצאה לא נמצאה")
 
-def _build_site_params(site: Site) -> SiteParams:
-    """Helper: convert a Site ORM object to the engine's SiteParams dataclass."""
-    return SiteParams(
-        lat=site.lat, lon=site.lon,
-        ant_height=site.ant_height,
-        elevation_m=site.elevation_m or 0.0,
-        frequency=site.frequency,
-        tx_power=site.tx_power,
-        rx_threshold=site.rx_threshold,
-        max_radius=site.max_radius,
+    grid = _decode_raster(result)
+    if grid is not None:
+        meta = {
+            "result_id":     result.id,
+            "site_id":       result.site_id,
+            "site_lat":      result.site.lat if result.site else None,
+            "site_lon":      result.site.lon if result.site else None,
+            "mode":          result.mode.value,
+            "covered_pct":   result.covered_pct,
+            "covered_pct_any_signal": result.covered_pct_any_signal,
+            "threshold_dbm": result.threshold_dbm,
+            "weak_pct":      result.weak_pct,
+            "model":         result.model,
+            "dem_source":    result.dem_source,
+            "dem_valid_pct": result.dem_valid_pct,
+            "dem_m_per_px":  result.dem_m_per_px,
+            "resolution":    result.resolution,
+            "created_at":    result.created_at.isoformat() if result.created_at else None,
+            "bbox": {
+                "sw_lat": result.poly_sw_lat, "sw_lon": result.poly_sw_lon,
+                "ne_lat": result.poly_ne_lat, "ne_lon": result.poly_ne_lon,
+            },
+        }
+        geojson = rssi_grid_to_geojson(grid, _result_bbox(result), meta)
+    else:
+        geojson = _load_legacy_geojson(result)
+        if geojson is None:
+            raise HTTPException(404, detail="נתוני כיסוי לא נמצאו")
+
+    filename = f"coverage_result_{result.id}_{result.mode.value}.geojson"
+    return Response(
+        content=json.dumps(geojson, ensure_ascii=False),
+        media_type="application/geo+json",
+        headers={"Content-Disposition": _attachment_header(filename)},
     )
 
+
+def _attachment_header(filename: str) -> str:
+    """Content-Disposition with an ASCII fallback + RFC 5987 UTF-8 name (Hebrew site names)."""
+    ascii_name = filename.encode("ascii", "ignore").decode() or "download"
+    ascii_name = ascii_name.replace('"', "")
+    return (f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{urllib.parse.quote(filename)}")
+
+
+# ── Cross-Section ─────────────────────────────────────────────────────────────
 
 def _cross_section_with_terrain(
     site: Site,
     wps: list,
     mode: str,
     resolution: int,
-) -> object:
+):
     """
-    Build bbox from waypoints + site location, fetch real elevation grid,
-    then run calculate_cross_section with terrain data.
+    Build bbox from waypoints + site location, fetch the real elevation grid
+    (adaptive resolution), then run calculate_cross_section with terrain data.
+    Returns (CrossSectionStats, ElevationGrid | None, site-elevation warning | None).
     """
     sp = _build_site_params(site)
 
@@ -609,18 +1154,37 @@ def _cross_section_with_terrain(
     all_lons = [w["lon"] for w in wps] + [site.lon]
     # Add a small margin (~1 km ≈ 0.01°) so profile edges have elevation data
     MARGIN   = 0.01
-    sw_lat   = min(all_lats) - MARGIN
-    sw_lon   = min(all_lons) - MARGIN
-    ne_lat   = max(all_lats) + MARGIN
-    ne_lon   = max(all_lons) + MARGIN
+    bbox = BoundingBox(
+        min(all_lats) - MARGIN, min(all_lons) - MARGIN,
+        max(all_lats) + MARGIN, max(all_lons) + MARGIN,
+    )
+    res = adaptive_resolution(bbox, _estimate_dem_m_per_px(bbox))
+    eg  = _fetch_dem(bbox, res, res)          # DemAreaTooLarge → 413
 
-    bbox     = BoundingBox(sw_lat, sw_lon, ne_lat, ne_lon)
-    # 300 pts per axis is enough precision for profile sampling
-    elev_grid = fetch_elevation_grid(sw_lat, sw_lon, ne_lat, ne_lon,
-                                     out_width=300, out_height=300)
+    site_elev, elev_warning, _src = _resolve_site_elevation(site, eg, bbox)
+    sp = dc_replace(sp, elevation_m=site_elev)
 
-    return calculate_cross_section(sp, site.name, wps, mode, resolution,
-                                   elev_grid=elev_grid, bbox=bbox)
+    stats = calculate_cross_section(
+        sp, site.name, wps, mode, resolution,
+        elev_grid=eg.elev if eg is not None else None,
+        bbox=bbox,
+    )
+    return stats, eg, elev_warning
+
+
+def _cross_section_warnings(stats, elev_warning: Optional[str] = None) -> List[str]:
+    warnings: List[str] = [elev_warning] if elev_warning else []
+    if stats.dem_source != DEM_SOURCE_TERRARIUM:
+        warnings.append(
+            "החתך חושב ללא נתוני טופוגרפיה אמיתיים (מודל סימולציה בלבד) – "
+            "אין להסתמך עליו לתכנון מבצעי."
+        )
+    elif stats.dem_valid_pct is not None and stats.dem_valid_pct < 95.0:
+        warnings.append(
+            f"נתוני הגבהים חלקיים ({stats.dem_valid_pct:.1f}% מהשטח) – "
+            "בקטעים ללא נתונים הונח שטח מישורי."
+        )
+    return warnings
 
 
 @router.post("/cross-section")
@@ -634,19 +1198,24 @@ def run_cross_section(
     if not site:
         raise HTTPException(404, detail="אתר לא נמצא")
 
-    wps   = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
-    stats = _cross_section_with_terrain(site, wps, body.mode.value, body.resolution)
+    wps       = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
+    stats, eg, elev_warning = _cross_section_with_terrain(
+        site, wps, body.mode.value, body.resolution)
     return {
         "site_id":             site.id,
         "site_name":           stats.site_name,
         "mode":                stats.mode,
         "waypoints":           stats.waypoints,
         "total_length_km":     stats.total_length_km,
-        "covered_pct":         stats.covered_pct,
+        "covered_pct":         stats.covered_pct,              # % points rssi >= threshold_dbm
+        "covered_pct_any_signal": stats.covered_pct_any_signal, # % points > -110 dBm
+        "threshold_dbm":       stats.threshold_dbm,
         "rssi_min":            stats.rssi_min,
         "rssi_max":            stats.rssi_max,
         "rssi_avg":            stats.rssi_avg,
+        "rssi_min_all":        stats.rssi_min_all,
         "risk_level":          stats.risk_level,
+        "risk_score":          stats.risk_score,
         "points": [
             {
                 "dist_along":     p.dist_along,
@@ -673,6 +1242,10 @@ def run_cross_section(
         "signal_distribution": stats.signal_distribution,
         "recommendations":     stats.recommendations,
         "duration_sec":        stats.duration_sec,
+        "dem_source":          stats.dem_source,
+        "dem_valid_pct":       stats.dem_valid_pct,
+        "dem_m_per_px":        round(eg.m_per_px, 2) if eg is not None else None,
+        "warnings":            _cross_section_warnings(stats, elev_warning),
     }
 
 
@@ -687,8 +1260,8 @@ def cross_section_docx(
     if not site:
         raise HTTPException(404, detail="אתר לא נמצא")
 
-    wps   = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
-    stats = _cross_section_with_terrain(site, wps, body.mode.value, body.resolution)
+    wps       = [{"lat": w.lat, "lon": w.lon} for w in body.waypoints]
+    stats, eg, _w = _cross_section_with_terrain(site, wps, body.mode.value, body.resolution)
     site_params = {
         "lat":          site.lat,
         "lon":          site.lon,
@@ -697,6 +1270,7 @@ def cross_section_docx(
         "tx_power":     site.tx_power,
         "rx_threshold": site.rx_threshold,
         "max_radius":   site.max_radius,
+        "dem_m_per_px": round(eg.m_per_px, 1) if eg is not None else None,
     }
     docx_bytes = generate_cross_section_docx(stats, site_params)
     filename   = f"cross_section_{site.name}_{stats.mode}.docx".replace(" ", "_")
@@ -704,113 +1278,67 @@ def cross_section_docx(
     return Response(
         content=docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _attachment_header(filename)},
     )
 
 
 # ── Point Elevation ───────────────────────────────────────────────────────────
 
 @router.get("/point-elevation")
-def point_elevation(lat: float, lon: float):
-    """Return terrain elevation (metres ASL) for a single WGS-84 point."""
-    from app.services.elevation import fetch_elevation
+def point_elevation(
+    lat: float, lon: float,
+    _: User = Depends(get_current_user),
+):
+    """
+    Return terrain elevation (metres ASL) for a single WGS-84 point.
+    elevation_m is null when the DEM tile is unavailable.
+    """
     elev = fetch_elevation(lat, lon)
     return {"lat": lat, "lon": lon, "elevation_m": elev}
 
 
 # ── Topography Overlay ────────────────────────────────────────────────────────
 
+def _transparent_png(width: int, height: int) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @router.get("/topo-overlay")
 def topo_overlay(
     sw_lat: float, sw_lon: float,
     ne_lat: float, ne_lon: float,
-    width:  int = 512,
-    height: int = 512,
+    width:  int = Query(512, ge=1, le=2048),
+    height: int = Query(512, ge=1, le=2048),
+    _: User = Depends(get_current_user),
 ):
     """
-    Fetch Terrarium RGB elevation tiles for the requested bbox, decode elevation,
-    and return a coloured RGBA PNG overlay (blue = low, red = high).
-    Used by the frontend as a Leaflet ImageOverlay.
+    Coloured RGBA elevation overlay (blue = low, red = high) for the bbox,
+    built on the shared terrain layer (terrain.fetch_elevation_grid_ex).
+    Pixels without DEM data are fully transparent; if no tile at all is
+    available the whole image is transparent.
     """
-    TILE_SIZE = 256
+    bbox = _validate_bbox(sw_lat, sw_lon, ne_lat, ne_lon)
+    eg   = _fetch_dem(bbox, width, height)          # DemAreaTooLarge → 413
+    if eg is None or not np.isfinite(eg.elev).any():
+        return Response(content=_transparent_png(width, height), media_type="image/png")
 
-    def _deg2num(lat: float, lon: float, z: int):
-        lat_r = math.radians(lat)
-        n     = 2.0 ** z
-        x     = int((lon + 180.0) / 360.0 * n)
-        y     = int((1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * n)
-        return x, y
-
-    def _deg2px(lat: float, lon: float, z: int):
-        lat_r = math.radians(lat)
-        n     = 2.0 ** z
-        px    = ((lon + 180.0) / 360.0 * n) * TILE_SIZE
-        py    = ((1.0 - math.asinh(math.tan(lat_r)) / math.pi) / 2.0 * n) * TILE_SIZE
-        return px, py
-
-    # Choose zoom based on bbox span
-    z = 8
-    span = max(abs(ne_lat - sw_lat), abs(ne_lon - sw_lon))
-    if span < 0.5: z = 10
-    if span < 0.1: z = 12
-
-    x_min, y_max = _deg2num(sw_lat, sw_lon, z)
-    x_max, y_min = _deg2num(ne_lat, ne_lon, z)
-
-    # Safety: drop zoom if tile count exceeds threshold
-    if (x_max - x_min + 1) * (y_max - y_min + 1) > 20:
-        z -= 1
-        x_min, y_max = _deg2num(sw_lat, sw_lon, z)
-        x_max, y_min = _deg2num(ne_lat, ne_lon, z)
-
-    w_tiles = x_max - x_min + 1
-    h_tiles = y_max - y_min + 1
-
-    # Assemble tile mosaic
-    composite = Image.new("RGB", (w_tiles * TILE_SIZE, h_tiles * TILE_SIZE))
-    for tx in range(x_min, x_max + 1):
-        for ty in range(y_min, y_max + 1):
-            url = (f"https://s3.amazonaws.com/elevation-tiles-prod/terrarium"
-                   f"/{z}/{tx}/{ty}.png")
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "CoverageOps/1.0"})
-                with urllib.request.urlopen(req, timeout=2) as resp:
-                    tile = Image.open(BytesIO(resp.read())).convert("RGB")
-                    composite.paste(tile, ((tx - x_min) * TILE_SIZE,
-                                           (ty - y_min) * TILE_SIZE))
-            except Exception:
-                pass  # missing tile → stays black, not fatal
-
-    # Crop to exact bbox pixel bounds
-    px_min, py_max = _deg2px(sw_lat, sw_lon, z)
-    px_max, py_min = _deg2px(ne_lat, ne_lon, z)
-    left   = px_min - x_min * TILE_SIZE
-    right  = px_max - x_min * TILE_SIZE
-    top    = py_min - y_min * TILE_SIZE
-    bottom = py_max - y_min * TILE_SIZE
-
-    cropped = composite.crop((int(left), int(top), int(right), int(bottom)))
-    cropped = cropped.resize((width, height), Image.Resampling.BILINEAR)
-
-    # Decode Terrarium RGB → elevation (metres)
-    arr  = np.array(cropped, dtype=np.float32)
-    elev = arr[:, :, 0] * 256.0 + arr[:, :, 1] + arr[:, :, 2] / 256.0 - 32768.0
-
-    valid = elev > -500
-    if not np.any(valid):
-        valid = np.ones_like(elev, dtype=bool)
-    e_min, e_max = float(np.min(elev[valid])), float(np.max(elev[valid]))
+    elev  = eg.elev
+    valid = np.isfinite(elev)
+    e_min, e_max = float(np.nanmin(elev)), float(np.nanmax(elev))
     if e_max <= e_min:
         e_max = e_min + 1
 
     # Normalise and map to blue→green→red palette
-    norm    = np.clip((elev - e_min) / (e_max - e_min), 0.0, 1.0)
-    out     = np.zeros((height, width, 4), dtype=np.uint8)
-    out[:, :, 0] = np.clip(norm * 255.0, 0, 255)                           # R
+    with np.errstate(invalid="ignore"):
+        norm = np.clip((np.where(valid, elev, e_min) - e_min) / (e_max - e_min), 0.0, 1.0)
+    out = np.zeros((height, width, 4), dtype=np.uint8)
+    out[:, :, 0] = np.clip(norm * 255.0, 0, 255)                              # R
     out[:, :, 1] = np.clip((1.0 - np.abs(norm * 2.0 - 1.0)) * 255.0, 0, 255)  # G
-    out[:, :, 2] = np.clip((1.0 - norm) * 255.0, 0, 255)                   # B
-    out[:, :, 3] = 160                                                      # Alpha
+    out[:, :, 2] = np.clip((1.0 - norm) * 255.0, 0, 255)                      # B
+    out[:, :, 3] = np.where(valid, 160, 0)                                    # Alpha
 
     buf = io.BytesIO()
-    Image.fromarray(out).save(buf, format="PNG")
+    Image.fromarray(out, mode="RGBA").save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")

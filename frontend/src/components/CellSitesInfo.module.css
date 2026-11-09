@@ -1,0 +1,77 @@
+.root {
+  background: var(--bg); border: 1px solid var(--border); border-top: none;
+  margin: -6px 0 6px; padding: 10px 12px 12px;
+  font-size: 11px; color: var(--text); line-height: 1.55;
+}
+.title {
+  font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 4px;
+}
+.sub {
+  font-size: 10px; font-weight: 700; color: var(--text-dim);
+  letter-spacing: .5px; margin: 10px 0 5px;
+}
+.p { margin: 0 0 6px; color: var(--text); }
+.note { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+.warn {
+  color: var(--warn); border: 1px dashed var(--warn);
+  padding: 6px 8px; margin: 6px 0;
+}
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 8px; }
+.stat {
+  background: var(--bg2); border: 1px solid var(--border);
+  padding: 6px 4px; text-align: center; font-size: 10px; color: var(--text-dim);
+}
+.stat span {
+  display: block; font-size: 15px; font-weight: 700; color: var(--text-bright);
+  font-variant-numeric: tabular-nums;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text-dim); font: inherit; font-size: 11px;
+  padding: 3px 8px; cursor: pointer; transition: all .15s;
+}
+.chip i {
+  width: 9px; height: 9px; border-radius: 50%; border: 2px solid; display: inline-block;
+}
+.chip small { font-size: 9px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.chipOn { color: var(--text); border-color: rgba(0,212,255,0.35); }
+.chip:hover { border-color: var(--accent); }
+
+.check {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer;
+}
+.legendDash {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px dashed #f97316; display: inline-block;
+}
+
+.more {
+  background: none; border: none; color: var(--accent); font: inherit; font-size: 11px;
+  padding: 8px 0 0; cursor: pointer;
+}
+.ul { margin: 0 0 6px; padding-inline-start: 16px; }
+.ul li { margin-bottom: 2px; }
+
+.table div {
+  display: flex; justify-content: space-between;
+  border-bottom: 1px solid var(--border); padding: 2px 0;
+}
+.table b { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.source { color: var(--text-dim); font-size: 10px; }
+.source a { color: var(--accent); }
+.badge {
+  margin-inline-start: 6px; font-size: 9px; font-weight: 700;
+  padding: 0 5px; border: 1px solid var(--accent2); color: var(--accent2);
+}
+
+.syncBtn {
+  margin-top: 10px; width: 100%;
+  background: var(--bg2); border: 1px solid var(--accent); color: var(--accent);
+  font: inherit; font-size: 11px; font-weight: 600; padding: 6px; cursor: pointer;
+}
+.syncBtn:disabled { opacity: .6; cursor: wait; }
