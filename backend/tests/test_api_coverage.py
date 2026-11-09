@@ -507,10 +507,10 @@ def _too_large(*a, **k):
 class TestReviewRound:
     def test_rssi_min_all_persisted_and_used_for_risk(self, client, db_session_factory):
         site = create_site(client, max_radius=30.0)
-        # 40 km bbox: far cells have no usable signal → rssi_min_all < rssi_min
+        # 40 km bbox: rssi_min_all is the 5th-percentile RSSI over ALL in-radius cells
         res = analyze(client, site["id"], bbox_around(32.0, 35.0, 20.0), resolution=60)
         assert res["rssi_min_all"] is not None
-        assert res["rssi_min_all"] <= res["rssi_min"]
+        assert res["rssi_min_all"] <= res["rssi_avg"]
         assert res["risk_level"] in RISK_LEVELS
         db = db_session_factory()
         row = db.get(CoverageResult, res["id"])

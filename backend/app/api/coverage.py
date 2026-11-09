@@ -279,9 +279,12 @@ def _grid_summary(grid: np.ndarray, threshold: float) -> dict:
     dist["rssi_avg"] = round(float(np.mean(any_sig)), 1) if any_sig.size else 0.0
     dist["rssi_max"] = round(float(np.max(any_sig)),  1) if any_sig.size else 0.0
     dist["rssi_min"] = round(float(np.min(any_sig)),  1) if any_sig.size else 0.0
-    # Risk input: minimum over ALL in-radius cells, including "none" (≤ -110 dBm)
+    # Risk input: robust minimum over ALL in-radius cells, including "none"
+    # (≤ -110 dBm). The 5th percentile is used instead of the absolute minimum:
+    # a 15×15 km box almost always contains a few deeply shadowed cells, and the
+    # true minimum would rate nearly every area analysis CRITICAL.
     finite = grid[~np.isnan(grid)]
-    dist["rssi_min_all"] = round(float(np.min(finite)), 1) if finite.size else None
+    dist["rssi_min_all"] = round(float(np.percentile(finite, 5)), 1) if finite.size else None
     return dist
 
 
@@ -396,6 +399,12 @@ def _result_warnings(result: CoverageResult, dem_extension_capped: bool = False)
         warnings.append(
             "האתר רחוק מתא השטח: הטופוגרפיה בין האתר לתא השטח נכללה בחישוב באופן חלקי בלבד "
             "(מגבלת גודל רשת). חסימות בקטע הרחוק לא נלקחו בחשבון."
+        )
+    site = getattr(result, "site", None)
+    if site is not None and getattr(site, "params_source", None) == "estimated":
+        warnings.append(
+            "פרמטרי המשדר (גובה אנטנה, הספק, תדר) משוערים לפי סוג האתר הסלולרי – "
+            "התוצאה היא הערכה בלבד. ניתן לעדכן ערכים אמיתיים בלשונית אתרים."
         )
     return warnings
 

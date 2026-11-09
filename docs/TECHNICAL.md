@@ -144,7 +144,7 @@ coverageops/
 | weak_pct     | FLOAT      | % תאים ברמות weak + marginal |
 | threshold_dbm| FLOAT      | סף הקבלה ששימש בחישוב (rx_threshold של האתר) |
 | rssi_avg/max/min | FLOAT  | סטטיסטיקת RSSI על תאים עם אות (> −110 dBm) |
-| rssi_min_all | FLOAT      | RSSI מינימלי על **כל** התאים ברדיוס (כולל ללא אות) — קלט לדירוג הסיכון; בשורות ישנות NULL → נעשה שימוש ב-rssi_min |
+| rssi_min_all | FLOAT      | אחוזון 5 של ה-RSSI על **כל** התאים ברדיוס (כולל ללא אות; מינימום רובסטי) — קלט לדירוג הסיכון; בשורות ישנות NULL → נעשה שימוש ב-rssi_min |
 | rssi_raster  | BYTEA      | (deferred — לא נטען ברשימות; `has_raster` מחושב ב-SQL) רסטר RSSI מקודד (`encode_rssi_grid`): int16 ברזולוציית 0.1 dB, zlib; NaN = מחוץ לרדיוס; שורה 0 = צפון |
 | resolution   | INTEGER    | תאים לציר של הרסטר |
 | dem_source   | VARCHAR(32)| `terrarium` (DEM אמיתי) / `none` (סימולציה) |

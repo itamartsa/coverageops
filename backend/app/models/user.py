@@ -98,7 +98,7 @@ class CoverageResult(Base):
     rssi_avg     = Column(Float)
     rssi_max     = Column(Float)
     rssi_min     = Column(Float)                             # over cells > -110 dBm
-    rssi_min_all = Column(Float, nullable=True)              # over ALL in-radius cells (risk)
+    rssi_min_all = Column(Float, nullable=True)              # 5th-percentile RSSI over ALL in-radius cells (risk input)
     covered_pct_any_signal = Column(Float, nullable=True)   # % cells > -110 dBm
     weak_pct     = Column(Float, nullable=True)              # % weak + marginal
     threshold_dbm = Column(Float, nullable=True)             # rx_threshold used
