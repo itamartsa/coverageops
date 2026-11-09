@@ -2,10 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
-import api, { apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
-import type { CellSiteRow } from "../services/api";
-import { CELL_OPERATORS, cellSitePopupHtml } from "../lib/cellSites";
+import api, { apiErrorText, apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
+import type { CellSiteDetail, CellSiteRow } from "../services/api";
+import {
+  CELL_OPERATORS, canEditCellSiteHeight, cellSiteHeightFormHtml, cellSitePopupHtml, isManualHeight,
+} from "../lib/cellSites";
 import styles from "./MapView.module.css";
+
+/** Canvas style of a civil cell-site marker. Manual (user-entered) heights get a dark, thicker ring. */
+function cellSiteMarkerStyle(s: CellSiteRow): L.CircleMarkerOptions {
+  const color = (CELL_OPERATORS[s.operator] ?? CELL_OPERATORS.OTHER).color;
+  const building = s.status === "construction";
+  const manual = isManualHeight(s);
+  return {
+    radius: building ? 5 : 4,
+    color: manual ? "#111827" : building ? color : "#ffffff",
+    weight: manual ? 2 : building ? 2 : 1,
+    dashArray: building ? "2 2" : undefined,
+    fillColor: color,
+    fillOpacity: building ? 0.15 : 0.9,
+  };
+}
 
 // Coverage colors matching backend levels
 const LEVEL_COLORS: Record<string, string> = {
@@ -61,6 +78,8 @@ export default function MapView() {
   const cellSitesRef     = useRef<L.LayerGroup | null>(null);
   const cellSitesDataRef = useRef<CellSiteRow[] | null>(null);
   const cellCanvasRef    = useRef<L.Canvas | null>(null);
+  const cellMarkersRef   = useRef<Map<number, L.CircleMarker>>(new Map());
+  const cellDetailsRef   = useRef<Map<number, CellSiteDetail>>(new Map());
 
   const {
     sites, drawMode, setDrawMode, setBbox, bbox,
@@ -336,30 +355,24 @@ export default function MapView() {
         const renderer = cellCanvasRef.current ?? (cellCanvasRef.current = L.canvas({ padding: 0.5 }));
         const ops = new Set(cellSiteFilter.operators);
         const group = L.layerGroup();
+        cellMarkersRef.current.clear();
         let n = 0;
         for (const s of cellSitesDataRef.current) {
           if (!ops.has(s.operator)) continue;
-          const building = s.status === "construction";
-          if (building && !cellSiteFilter.showConstruction) continue;
-          const color = (CELL_OPERATORS[s.operator] ?? CELL_OPERATORS.OTHER).color;
-          const m = L.circleMarker([s.lat, s.lon], {
-            renderer,
-            radius: building ? 5 : 4,
-            color: building ? color : "#ffffff",
-            weight: building ? 2 : 1,
-            dashArray: building ? "2 2" : undefined,
-            fillColor: color,
-            fillOpacity: building ? 0.15 : 0.9,
-          });
+          if (s.status === "construction" && !cellSiteFilter.showConstruction) continue;
+          const m = L.circleMarker([s.lat, s.lon], { renderer, ...cellSiteMarkerStyle(s) });
           m.bindPopup("טוען…", { maxWidth: 320 });
           m.on("popupopen", async (e: L.PopupEvent) => {
             try {
-              e.popup.setContent(cellSitePopupHtml(await cellSitesApi.get(s.id)));
+              const d = await cellSitesApi.get(s.id);
+              cellDetailsRef.current.set(s.id, d);
+              e.popup.setContent(cellSitePopupHtml(d, canEditCellSiteHeight(useStore.getState().user?.role)));
             } catch {
               e.popup.setContent("⚠ שגיאה בטעינת פרטי האתר");
             }
           });
           m.addTo(group);
+          cellMarkersRef.current.set(s.id, m);
           n++;
         }
         if (cancelled) return;
@@ -372,6 +385,88 @@ export default function MapView() {
     })();
     return () => { cancelled = true; };
   }, [cellSitesVisible, cellSiteFilter, cellSitesVersion]);
+
+  // ── Cell-site popup: inline antenna-height editor (one delegated listener) ──
+  // The popup is an HTML string, so its buttons are wired here: on every popupopen
+  // we attach (once per popup element) a click/keydown handler that reacts to
+  // [data-cs-action] buttons inside a [data-cellsite-id] popup.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    function applyUpdate(popup: L.Popup, d: CellSiteDetail) {
+      cellDetailsRef.current.set(d.id, d);
+      const row = cellSitesDataRef.current?.find((r) => r.id === d.id);
+      if (row) {
+        row.ant_height_m = d.ant_height_m;
+        row.height_source = d.height_source;
+        row.height_note = d.height_note;
+        row.height_updated_at = d.height_updated_at;
+        cellMarkersRef.current.get(d.id)?.setStyle(cellSiteMarkerStyle(row));
+      }
+      popup.setContent(cellSitePopupHtml(d, canEditCellSiteHeight(useStore.getState().user?.role)));
+    }
+
+    async function handle(popup: L.Popup, root: HTMLElement, action: string) {
+      const id = Number(root.dataset.cellsiteId);
+      const d = cellDetailsRef.current.get(id);
+      if (!d) return;
+      const slot = root.querySelector<HTMLElement>("[data-cs-height]");
+      const errEl = () => root.querySelector<HTMLElement>('[data-cs-field="err"]');
+      const canEdit = canEditCellSiteHeight(useStore.getState().user?.role);
+      if (!slot) return;
+
+      if (action === "edit" && canEdit) {
+        slot.innerHTML = cellSiteHeightFormHtml(d);
+        popup.update();
+        slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.focus();
+        return;
+      }
+      if (action === "cancel") {
+        popup.setContent(cellSitePopupHtml(d, canEdit));
+        return;
+      }
+      try {
+        if (action === "save") {
+          const h = Number(slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.value);
+          const note = slot.querySelector<HTMLInputElement>('[data-cs-field="note"]')?.value.trim();
+          if (!Number.isFinite(h) || h < 0.5 || h > 300) {
+            const e = errEl(); if (e) e.textContent = "גובה חייב להיות בין 0.5 ל-300 מטר";
+            return;
+          }
+          applyUpdate(popup, await cellSitesApi.setHeight(id, h, note));
+          notify(`✓ גובה האנטנה נשמר: ${h} מ'`);
+        } else if (action === "reset") {
+          const r = await cellSitesApi.resetHeight(id);
+          applyUpdate(popup, r);
+          notify(`↺ הגובה הוחזר להערכה לפי סוג האתר (${r.ant_height_m} מ')`);
+        }
+      } catch (err) {
+        const e = errEl(); if (e) e.textContent = apiErrorText(err, "השמירה נכשלה");
+      }
+    }
+
+    const onOpen = (e: L.PopupEvent) => {
+      const el = e.popup.getElement();
+      if (!el || el.dataset.csWired) return;
+      el.dataset.csWired = "1";
+      el.addEventListener("click", (ev) => {
+        const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-cs-action]");
+        const root = btn?.closest<HTMLElement>("[data-cellsite-id]");
+        if (btn && root) { ev.preventDefault(); void handle(e.popup, root, btn.dataset.csAction!); }
+      });
+      el.addEventListener("keydown", (ev) => {
+        const t = ev.target as HTMLElement;
+        const root = t.closest<HTMLElement>("[data-cellsite-id]");
+        if (!root || !t.matches("[data-cs-field]")) return;
+        ev.stopPropagation();   // keep Leaflet's keyboard handler (Esc closes popup, +/- zoom) out of the form
+        if (ev.key === "Enter")  { ev.preventDefault(); void handle(e.popup, root, "save"); }
+        if (ev.key === "Escape") { ev.preventDefault(); void handle(e.popup, root, "cancel"); }
+      });
+    };
+    map.on("popupopen", onOpen);
+    return () => { map.off("popupopen", onOpen); };
+  }, []);
 
   // ── Coverage PNG overlays (from mapLayers) ───────────────────────────────────
   useEffect(() => {

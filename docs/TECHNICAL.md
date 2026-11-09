@@ -181,6 +181,20 @@ coverageops/
 | x_itm, y_itm | קואורדינטות המקור |
 | *_permit_date, last_periodic_check, max_pct_of_threshold, *_permit_url | אתרים פעילים |
 | request_date, permit_type, reference_no | אתרים בהקמה |
+| ant_height_m | גובה אנטנה (מ' מעל הקרקע). **לא קיים במאגר הממשלתי** — משוער לפי `site_type`, או הוזן ידנית |
+| height_source | `estimated` (ברירת מחדל, NOT NULL) / `manual` |
+| height_note, height_updated_at, height_updated_by | הערה / מועד (UTC) / שם משתמש של העדכון האחרון לגובה |
+
+`cell_site_type_defaults` — גובה משוער לכל סוג אתר (ניתן לעריכה ע"י ADMIN):
+`site_type` (PK), `default_height_m`, `label_he`, `note_he`. נזרע באתחול (`seed_type_defaults`, אידמפוטנטי — לא דורס
+עריכות) מתוך `HEIGHT_DEFAULTS` ב-`services/cell_sites_import.py`:
+ground_mast 25 · rooftop_mast 18 · sting 15 · tilted 15 · wireless_access 6 · small_outdoor 6 · small_indoor 3 · other 15.
+`estimated_height_for(site_type, db)` מחזיר את הערך מהטבלה (נפילה למילון).
+
+גבהים בייבוא/רענון: `import_data` מחליף את כל הטבלה; לפני המחיקה הוא שומר את כל השורות `manual` לפי
+(operator, site_code, status) — או `source_id` כשאין site_code — ומשחזר אותן על השורות החדשות; כל שאר השורות מקבלות
+את ההערכה לפי סוג. באתחול (`ensure_loaded`) שורות עם `ant_height_m IS NULL` מקבלות הערכה (backfill חד-פעמי אחרי הוספת
+העמודות). העמודות נוספות ב-`core/migrations.py` (`ADD COLUMN IF NOT EXISTS`; `height_source` עם `NOT NULL DEFAULT 'estimated'`).
 
 `cell_sites_sync` — שורה לכל ייבוא (מקור live/snapshot, מועד משיכה, ספירות).
 
@@ -289,10 +303,21 @@ coverageops/
 ### Cell sites — `/api/cell-sites`
 | Method | Path | הרשאה | תיאור |
 |--------|------|-------|-------|
-| GET  | /       | כל משתמש | רשימה דחוסה למפה: `{fields, rows}`; פילטרים `status`, `operator` (מופרד בפסיקים) |
-| GET  | /meta   | כל משתמש | מקור, ספירות לפי סטטוס/מפעיל/סוג/טכנולוגיה, ייבוא אחרון |
-| GET  | /{id}   | כל משתמש | כל השדות של אתר |
-| POST | /sync   | ADMIN    | רענון מ-data.gov.il (נפילה לעותק השמור) |
+| GET  | /       | כל משתמש | רשימה דחוסה למפה: `{fields, rows}`; פילטרים `status`, `operator` (מופרד בפסיקים). fields: `id, lat, lon, operator, status, site_type, techs, ant_height_m, height_source, height_note, height_updated_at` |
+| GET  | /meta   | כל משתמש | מקור, ספירות לפי סטטוס/מפעיל/סוג/טכנולוגיה, ייבוא אחרון, ו-`height_estimation: {note_he, defaults[], manual_count, estimated_count}` |
+| GET  | /type-defaults | כל משתמש | `[{site_type, default_height_m, label_he, note_he}]` |
+| PUT  | /type-defaults/{site_type} | ADMIN | גוף `{default_height_m}` (0.5–300). מעדכן גם את כל האתרים מהסוג שעדיין `estimated`; מחזיר את השורה + `updated_sites`. 404 לסוג לא מוכר |
+| GET  | /{id}   | כל משתמש | כל השדות של אתר (כולל שדות הגובה; `height_updated_at` ב-ISO עם `Z`) |
+| PATCH | /{id}/height | ADMIN, OPERATOR | גוף `{ant_height_m: 0.5–300, note?: str ≤256}` → `height_source="manual"`, רושם משתמש ומועד; מחזיר את האתר |
+| DELETE | /{id}/height | ADMIN, OPERATOR | חזרה להערכה לפי סוג האתר (`estimated`, ההערה נמחקת); מחזיר את האתר |
+| POST | /sync   | ADMIN    | רענון מ-data.gov.il (נפילה לעותק השמור). גבהים ידניים נשמרים |
+
+נתיבים סטטיים (`/meta`, `/type-defaults`) מוגדרים לפני `/{site_id}`.
+
+Frontend: עריכת גובה בחלון האתר — `cellSitePopupHtml(detail, canEdit)` ב-`lib/cellSites.ts` מייצר HTML עם
+`data-cellsite-id` וכפתורי `data-cs-action` (edit/save/cancel/reset); ב-`MapView.tsx` מאזין `popupopen` יחיד על המפה
+מחבר click/keydown מואצל לכל אלמנט popup (פעם אחת), קורא ל-`cellSitesApi.setHeight/resetHeight`, מעדכן את השורה
+בזיכרון (`cellSitesDataRef`) ואת סגנון הסמן (טבעת כהה לגובה ידני), ומרנדר מחדש את החלון.
 
 ## מנוע הפצה (coverage_engine.py)
 

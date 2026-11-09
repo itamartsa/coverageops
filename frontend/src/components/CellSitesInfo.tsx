@@ -3,7 +3,7 @@
  */
 import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { cellSitesApi } from "../services/api";
+import { apiErrorText, cellSitesApi } from "../services/api";
 import type { CellSitesMeta } from "../services/api";
 import { CELL_OPERATORS, ALL_OPERATORS } from "../lib/cellSites";
 import { notify } from "./Notification";
@@ -19,6 +19,10 @@ export default function CellSitesInfo() {
   const [err, setErr] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [showHeights, setShowHeights] = useState(false);
+  // ADMIN inline edit of a type default: value being typed, then an explicit confirm step
+  const [editDef, setEditDef] = useState<{ type: string; value: string; confirm: boolean } | null>(null);
+  const [savingDef, setSavingDef] = useState(false);
 
   useEffect(() => {
     cellSitesApi.meta().then(setMeta).catch(() => setErr(true));
@@ -46,7 +50,30 @@ export default function CellSitesInfo() {
     }
   }
 
+  async function saveTypeDefault() {
+    if (!editDef) return;
+    const h = Number(editDef.value);
+    if (!Number.isFinite(h) || h < 0.5 || h > 300) {
+      notify("⚠ גובה חייב להיות בין 0.5 ל-300 מטר");
+      return;
+    }
+    if (!editDef.confirm) { setEditDef({ ...editDef, confirm: true }); return; }
+    setSavingDef(true);
+    try {
+      const r = await cellSitesApi.setTypeDefault(editDef.type, h);
+      notify(`✓ ברירת המחדל עודכנה ל-${h} מ' — ${fmt(r.updated_sites)} אתרים משוערים עודכנו`);
+      setEditDef(null);
+      bumpCellSitesVersion();   // re-fetch meta + map rows
+    } catch (e) {
+      notify(`⚠ ${apiErrorText(e, "העדכון נכשל")}`);
+    } finally {
+      setSavingDef(false);
+    }
+  }
+
   const ops = meta?.by_operator ?? {};
+  const hEst = meta?.height_estimation;
+  const isAdmin = user?.role === "ADMIN";
   const last = meta?.last_sync;
 
   return (
@@ -113,7 +140,8 @@ export default function CellSitesInfo() {
 
           <div className={styles.sub}>מה <u>אין</u> במאגר — חשוב לניתוח כיסוי</div>
           <ul className={styles.ul}>
-            <li>אזימוט וכיוון אנטנות, גובה אנטנה, תדרים והספק שידור</li>
+            <li>אזימוט וכיוון אנטנות, תדרים והספק שידור</li>
+            <li>גובה אנטנה — המערכת מציגה גובה <b>משוער</b> לפי סוג האתר (ראה "גובה אנטנות" למטה)</li>
             <li>מזהי תאים (Cell ID / eNB) ונתוני כיסוי בפועל</li>
             <li>אתרים ביטחוניים / מסווגים אינם מפורסמים</li>
           </ul>
@@ -129,6 +157,75 @@ export default function CellSitesInfo() {
                 {Object.entries(meta.by_site_type).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
                   <div key={k}><span>{k}</span><b>{fmt(v)}</b></div>
                 ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {/* ── Antenna heights (estimated) ──────────────────────────────────── */}
+      <button className={styles.more} onClick={() => setShowHeights((v) => !v)}>
+        {showHeights ? "▲ הסתר" : "▼ גובה אנטנות (משוער)"}
+      </button>
+
+      {showHeights && (
+        <>
+          <div className={styles.sub}>גובה אנטנות (משוער)</div>
+          <p className={styles.p}>
+            <b>המאגר הממשלתי אינו כולל את גובה האנטנות.</b> לכל אתר מוצג גובה <b>משוער</b> לפי
+            סוג האתר (הטבלה למטה) — מסומן בחלון האתר ב-<span className={styles.estTag}>⚠ משוער</span>.
+            מי שיודע את הגובה האמיתי של אתר מסוים יכול להזין אותו בחלון האתר במפה
+            ("ערוך גובה"); אתר כזה מסומן <span className={styles.manTag}>✓ הוזן ידנית</span> ובמפה
+            מקבל טבעת כהה. גובה שהוזן ידנית נשמר גם אחרי רענון מ-data.gov.il.
+          </p>
+
+          {hEst && (
+            <>
+              <div className={styles.stats2}>
+                <div className={styles.stat}><span>{fmt(hEst.manual_count)}</span>הוזנו ידנית</div>
+                <div className={styles.stat}><span>{fmt(hEst.estimated_count)}</span>משוערים</div>
+              </div>
+
+              <div className={styles.sub}>ברירת מחדל לפי סוג אתר{isAdmin && " (לחץ על ערך לעריכה)"}</div>
+              <div className={styles.defTable}>
+                {hEst.defaults.map((d) => {
+                  const editing = editDef?.type === d.site_type;
+                  return (
+                    <div key={d.site_type} className={styles.defRow}>
+                      <div className={styles.defHead}>
+                        <span>{d.label_he ?? d.site_type}</span>
+                        {editing ? (
+                          <span className={styles.defEdit}>
+                            <input type="number" min={0.5} max={300} step={0.5} value={editDef.value} autoFocus
+                                   disabled={savingDef}
+                                   onChange={(e) => setEditDef({ type: d.site_type, value: e.target.value, confirm: false })}
+                                   onKeyDown={(e) => {
+                                     if (e.key === "Enter") saveTypeDefault();
+                                     if (e.key === "Escape") setEditDef(null);
+                                   }} />
+                            מ'
+                            <button onClick={saveTypeDefault} disabled={savingDef}>{editDef.confirm ? "אישור" : "שמור"}</button>
+                            <button onClick={() => setEditDef(null)} disabled={savingDef}>ביטול</button>
+                          </span>
+                        ) : isAdmin ? (
+                          <button className={styles.defVal} title="ערוך ברירת מחדל"
+                                  onClick={() => setEditDef({ type: d.site_type, value: String(d.default_height_m), confirm: false })}>
+                            {d.default_height_m} מ' ✎
+                          </button>
+                        ) : (
+                          <b>{d.default_height_m} מ'</b>
+                        )}
+                      </div>
+                      {editing && editDef.confirm && (
+                        <div className={styles.warn}>
+                          הפעולה תעדכן את הגובה של <b>כל</b> האתרים מסוג "{d.label_he ?? d.site_type}"
+                          שגובהם עדיין משוער ל-{editDef.value} מ'. אתרים שהוזנו ידנית לא ישתנו. ללחוץ "אישור" להמשך.
+                        </div>
+                      )}
+                      {d.note_he && <div className={styles.note}>{d.note_he}</div>}
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}

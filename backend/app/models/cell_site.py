@@ -42,6 +42,24 @@ class CellSite(Base):
     permit_type   = Column(String(64))
     reference_no  = Column(String(32))
     source_id     = Column(Integer)                                  # ID in the source dataset
+    # antenna height — NOT in the government dataset. Estimated by site type
+    # (see CellSiteTypeDefault) unless a user entered the real value.
+    ant_height_m      = Column(Float, nullable=True)                 # metres AGL
+    height_source     = Column(String(16), nullable=False, default="estimated",
+                               server_default="estimated")           # estimated | manual
+    height_note       = Column(String(256), nullable=True)
+    height_updated_at = Column(DateTime, nullable=True)
+    height_updated_by = Column(String(64), nullable=True)
+
+
+class CellSiteTypeDefault(Base):
+    """Estimated antenna height per site type (admin-editable)."""
+    __tablename__ = "cell_site_type_defaults"
+
+    site_type        = Column(String(32), primary_key=True)
+    default_height_m = Column(Float, nullable=False)
+    label_he         = Column(String(64))
+    note_he          = Column(String(256))
 
 
 class CellSiteSync(Base):

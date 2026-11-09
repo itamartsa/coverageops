@@ -75,3 +75,30 @@
   font: inherit; font-size: 11px; font-weight: 600; padding: 6px; cursor: pointer;
 }
 .syncBtn:disabled { opacity: .6; cursor: wait; }
+
+/* ── Antenna heights (estimated) ── */
+.stats2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; margin-top: 6px; }
+.estTag { color: var(--warn); font-weight: 600; white-space: nowrap; }
+.manTag { color: var(--accent2); font-weight: 600; white-space: nowrap; }
+.defTable { display: flex; flex-direction: column; }
+.defRow { border-bottom: 1px solid var(--border); padding: 3px 0; }
+.defRow .note { margin-top: 0; }
+.defRow .warn { margin: 4px 0 2px; }
+.defHead { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.defHead b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.defVal {
+  background: none; border: 1px dashed var(--border); color: var(--text-bright);
+  font: inherit; font-size: 11px; font-weight: 600; padding: 0 5px; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.defVal:hover { border-color: var(--accent); color: var(--accent); }
+.defEdit { display: inline-flex; align-items: center; gap: 3px; }
+.defEdit input {
+  width: 52px; background: var(--bg2); border: 1px solid var(--accent); color: var(--text);
+  font: inherit; font-size: 11px; padding: 1px 3px;
+}
+.defEdit button {
+  background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+  font: inherit; font-size: 10px; padding: 1px 5px; cursor: pointer;
+}
+.defEdit button:first-of-type { border-color: var(--accent); color: var(--accent); }

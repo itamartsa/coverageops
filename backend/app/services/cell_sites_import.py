@@ -21,7 +21,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.models.cell_site import CellSite, CellSiteSync
+from app.models.cell_site import CellSite, CellSiteSync, CellSiteTypeDefault
 from app.services.itm import itm_to_wgs84
 
 log = logging.getLogger(__name__)
@@ -39,6 +39,21 @@ SITE_TYPES = {
     "תורן על הגג": "rooftop_mast", "תורן על מבנה": "rooftop_mast", "גג": "rooftop_mast",
     "אתר זעיר פנימי": "small_indoor", "אתר זעיר חיצוני": "small_outdoor",
     "אנטנת עוקץ": "sting", "מתקן גישה אלחוטי": "wireless_access", "אנטנה משתפלת": "tilted",
+}
+
+# Estimated antenna height (m AGL) per site type — the government dataset has
+# no heights. Seeded into `cell_site_type_defaults` (admin-editable); this dict
+# is also the fallback when the table is empty/unavailable.
+# site_type: (default_height_m, label_he, note_he)
+HEIGHT_DEFAULTS: dict[str, tuple[float, str, str]] = {
+    "ground_mast":     (25.0, "תורן קרקעי",       "תרנים קרקעיים בישראל נעים לרוב בין 18 ל-36 מ'"),
+    "rooftop_mast":    (18.0, "תורן על הגג",      "גובה הבניין + תורן של 3–6 מ'; תלוי מאוד בבניין"),
+    "sting":           (15.0, "אנטנת עוקץ",       "על קצה גג/חזית — בקירוב גובה הבניין"),
+    "tilted":          (15.0, "אנטנה משתפלת",     "על גג/חזית — בקירוב גובה הבניין"),
+    "wireless_access": (6.0,  "מתקן גישה אלחוטי", "small cell על עמוד תאורה/חזית, 4–10 מ'"),
+    "small_outdoor":   (6.0,  "אתר זעיר חיצוני",  ""),
+    "small_indoor":    (3.0,  "אתר זעיר פנימי",   "בתוך מבנה — לא רלוונטי לכיסוי חוץ"),
+    "other":           (15.0, "אחר",              ""),
 }
 
 # Rough envelope of Israel + Judea/Samaria + Golan, to drop broken coordinates
@@ -155,9 +170,81 @@ def _to_site(rec: dict, status: str):
     return s
 
 
+# ── Estimated heights ─────────────────────────────────────────────────────────
+def seed_type_defaults(db: Session) -> None:
+    """Insert missing rows of `cell_site_type_defaults` (never overwrites admin edits)."""
+    have = {t for (t,) in db.query(CellSiteTypeDefault.site_type).all()}
+    added = False
+    for t, (h, label, note) in HEIGHT_DEFAULTS.items():
+        if t not in have:
+            db.add(CellSiteTypeDefault(site_type=t, default_height_m=h, label_he=label, note_he=note))
+            added = True
+    if added:
+        db.commit()
+
+
+def height_defaults_map(db: Session) -> dict[str, float]:
+    """site_type -> estimated height (DB values over the built-in dict)."""
+    out = {t: v[0] for t, v in HEIGHT_DEFAULTS.items()}
+    try:
+        for t, h in db.query(CellSiteTypeDefault.site_type, CellSiteTypeDefault.default_height_m).all():
+            out[t] = h
+    except Exception as e:  # table missing (very old DB) — use the dict
+        log.warning("cell_site_type_defaults unavailable (%s) — using built-in defaults", e)
+        db.rollback()
+    return out
+
+
+def estimated_height_for(site_type: str | None, db: Session | None = None,
+                         _cache: dict[str, float] | None = None) -> float:
+    """Estimated antenna height for a site type (DB table, falling back to HEIGHT_DEFAULTS)."""
+    m = _cache if _cache is not None else (height_defaults_map(db) if db is not None
+                                           else {t: v[0] for t, v in HEIGHT_DEFAULTS.items()})
+    return m.get(site_type or "other", m.get("other", HEIGHT_DEFAULTS["other"][0]))
+
+
+def _height_key(operator, site_code, status, source_id):
+    """Identity used to carry manual heights across a full re-import."""
+    return (operator, site_code if site_code else f"#src{source_id}", status)
+
+
+def backfill_estimated_heights(db: Session) -> int:
+    """Rows with no height yet (e.g. right after the columns were added) get the estimate."""
+    defaults = height_defaults_map(db)
+    n = 0
+    for t, h in defaults.items():
+        n += (db.query(CellSite)
+                .filter(CellSite.ant_height_m.is_(None), CellSite.site_type == t)
+                .update({CellSite.ant_height_m: h, CellSite.height_source: "estimated"},
+                        synchronize_session=False))
+    # unknown/NULL types
+    n += (db.query(CellSite)
+            .filter(CellSite.ant_height_m.is_(None))
+            .update({CellSite.ant_height_m: defaults.get("other", 15.0),
+                     CellSite.height_source: "estimated"}, synchronize_session=False))
+    db.commit()
+    if n:
+        log.info("cell_sites: backfilled estimated height on %d rows", n)
+    return n
+
+
 # ── Load into DB ──────────────────────────────────────────────────────────────
 def import_data(db: Session, data: dict) -> CellSiteSync:
-    """Replace the whole table with `data` (atomic)."""
+    """Replace the whole table with `data` (atomic).
+
+    Antenna heights: every new row gets the estimate for its site type;
+    heights entered manually by users are carried over (matched by
+    operator + site_code + status).
+    """
+    defaults = height_defaults_map(db)
+    manual = {
+        _height_key(r.operator, r.site_code, r.status, r.source_id):
+            (r.ant_height_m, r.height_note, r.height_updated_at, r.height_updated_by)
+        for r in db.query(CellSite.operator, CellSite.site_code, CellSite.status, CellSite.source_id,
+                          CellSite.ant_height_m, CellSite.height_note,
+                          CellSite.height_updated_at, CellSite.height_updated_by)
+                   .filter(CellSite.height_source == "manual").all()
+    }
     sites, skipped = [], 0
     counts = {"active": 0, "construction": 0}
     for status in ("active", "construction"):
@@ -166,6 +253,13 @@ def import_data(db: Session, data: dict) -> CellSiteSync:
             if s is None:
                 skipped += 1
                 continue
+            m = manual.get(_height_key(s.operator, s.site_code, s.status, s.source_id))
+            if m:
+                s.ant_height_m, s.height_note, s.height_updated_at, s.height_updated_by = m
+                s.height_source = "manual"
+            else:
+                s.ant_height_m = estimated_height_for(s.site_type, _cache=defaults)
+                s.height_source = "estimated"
             sites.append(s)
             counts[status] += 1
 
@@ -200,6 +294,10 @@ def sync_live_or_snapshot(db: Session) -> CellSiteSync:
 
 
 def ensure_loaded(db: Session) -> None:
-    """Called at startup: if the table is empty, load the bundled snapshot."""
+    """Called at startup: seed height defaults; if the table is empty, load the
+    bundled snapshot; otherwise backfill estimated heights on rows that lack one."""
+    seed_type_defaults(db)
     if db.query(CellSite.id).first() is None and SNAPSHOT_PATH.exists():
         import_data(db, load_snapshot())
+    else:
+        backfill_estimated_heights(db)

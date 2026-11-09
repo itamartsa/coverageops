@@ -375,13 +375,30 @@ export const usersApi = {
 };
 
 // ── Civil cellular sites (data.gov.il) ────────────────────────────────────────
-export interface CellSiteRow {
+/** "estimated" = by site type (not in the government data); "manual" = entered by a user */
+export type CellSiteHeightSource = "estimated" | "manual";
+
+/** Antenna-height fields shared by the list row and the detail record */
+export interface CellSiteHeight {
+  ant_height_m: number | null;
+  height_source: CellSiteHeightSource;
+  height_note: string | null;
+  height_updated_at: string | null;   // ISO, UTC ("…Z")
+}
+
+export interface CellSiteRow extends CellSiteHeight {
   id: number; lat: number; lon: number;
   operator: string; status: "active" | "construction";
   site_type: string; techs: string;
 }
 
-export interface CellSiteDetail {
+export interface CellSiteTypeDefault {
+  site_type: string; default_height_m: number;
+  label_he: string | null; note_he: string | null;
+}
+
+export interface CellSiteDetail extends CellSiteHeight {
+  height_updated_by: string | null;
   id: number; status: string; operator: string; operator_he: string | null;
   site_code: string | null; city: string | null; address: string | null;
   authority: string | null; jurisdiction: string | null;
@@ -408,6 +425,12 @@ export interface CellSitesMeta {
     synced_at: string; source: "live" | "snapshot"; data_fetched_at: string | null;
     active: number; construction: number; skipped: number; note: string | null;
   };
+  height_estimation: {
+    note_he: string;
+    defaults: CellSiteTypeDefault[];
+    manual_count: number;
+    estimated_count: number;
+  };
 }
 
 export const cellSitesApi = {
@@ -420,6 +443,18 @@ export const cellSitesApi = {
   meta: async (): Promise<CellSitesMeta> => (await api.get("/api/cell-sites/meta")).data,
   get:  async (id: number): Promise<CellSiteDetail> => (await api.get(`/api/cell-sites/${id}`)).data,
   sync: async () => (await api.post("/api/cell-sites/sync", null, { timeout: 120000 })).data,
+  /** Record the real antenna height (ADMIN/OPERATOR) — marks the site "manual" */
+  setHeight: async (id: number, ant_height_m: number, note?: string): Promise<CellSiteDetail> =>
+    (await api.patch(`/api/cell-sites/${id}/height`, { ant_height_m, note: note || null })).data,
+  /** Drop the manual height and return to the estimate for the site type */
+  resetHeight: async (id: number): Promise<CellSiteDetail> =>
+    (await api.delete(`/api/cell-sites/${id}/height`)).data,
+  typeDefaults: async (): Promise<CellSiteTypeDefault[]> =>
+    (await api.get("/api/cell-sites/type-defaults")).data,
+  /** ADMIN — also updates every still-estimated site of that type */
+  setTypeDefault: async (site_type: string, default_height_m: number)
+    : Promise<CellSiteTypeDefault & { updated_sites: number }> =>
+    (await api.put(`/api/cell-sites/type-defaults/${encodeURIComponent(site_type)}`, { default_height_m })).data,
 };
 
 export default api;

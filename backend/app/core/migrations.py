@@ -17,6 +17,7 @@ from typing import Iterable, Tuple
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from app.models.cell_site import CellSite
 from app.models.user import CoverageResult, Site
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,11 @@ _ADDITIVE_COLUMNS: Tuple[Tuple[type, str], ...] = (
     (CoverageResult, "model"),
     (CoverageResult, "dem_m_per_px"),
     (CoverageResult, "rssi_min_all"),
+    (CellSite,       "ant_height_m"),
+    (CellSite,       "height_source"),
+    (CellSite,       "height_note"),
+    (CellSite,       "height_updated_at"),
+    (CellSite,       "height_updated_by"),
 )
 
 
@@ -62,7 +68,12 @@ def run_startup_migrations(engine: Engine, columns: Iterable[Tuple[type, str]] =
                 continue
 
         col_type = col.type.compile(dialect=engine.dialect)
-        default  = " DEFAULT 0" if (model is Site and col_name == "elevation_m") else ""
+        if model is Site and col_name == "elevation_m":
+            default = " DEFAULT 0"
+        elif model is CellSite and col_name == "height_source":
+            default = " NOT NULL DEFAULT 'estimated'"
+        else:
+            default = ""
         if_not   = "IF NOT EXISTS " if is_pg else ""
         ddl = f"ALTER TABLE {table} ADD COLUMN {if_not}{col_name} {col_type}{default}"
         try:
