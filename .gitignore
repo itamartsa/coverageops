@@ -39,3 +39,7 @@ Thumbs.db
 
 # SSL certs
 infra/ssl/
+
+# local run
+backend/local.db
+backend/data/
