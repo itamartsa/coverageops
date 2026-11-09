@@ -3,6 +3,7 @@
  * Centralizes all backend communication.
  */
 import axios from "axios";
+import { useStore } from "../store/useStore";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -19,12 +20,16 @@ api.interceptors.request.use((config) => {
 });
 
 // ── Auto-logout on 401 ────────────────────────────────────────────────────────
+// A 401 from the login request itself is a wrong password — the login form shows
+// the server message, so no redirect (a reload would wipe that message).
 api.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem("token");
-      window.location.href = "/login";
+    const isLogin = String(err.config?.url ?? "").includes("/api/auth/login");
+    if (err.response?.status === 401 && !isLogin) {
+      // Drop the persisted session too, otherwise "/" would load with a dead token
+      useStore.getState().logout();
+      if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     return Promise.reject(err);
   }

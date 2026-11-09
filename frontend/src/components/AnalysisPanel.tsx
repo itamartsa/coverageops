@@ -7,6 +7,7 @@ import {
   isLegacyThreshold, layerFromResult, runWithConcurrency,
 } from "../services/coverageFormat";
 import { notify } from "./Notification";
+import { canWrite, READ_ONLY_NOTE } from "../lib/roles";
 import styles from "./AnalysisPanel.module.css";
 
 const LEGEND = [
@@ -69,8 +70,9 @@ export default function AnalysisPanel() {
     bbox, setBbox,
     coverageResults, setCoverageResults, setIsCalculating,
     isCalculating,
-    addMapLayer,
+    addMapLayer, clearCoverageLayers, user,
   } = useStore();
+  const writable = canWrite(user?.role);
 
   function toggleSite(id: number) {
     if (selectedSiteIds.includes(id)) {
@@ -141,9 +143,11 @@ export default function AnalysisPanel() {
   }
 
   function clearResults() {
-    setCoverageResults([]);
+    // The map draws coverage from the layer list, not from coverageResults —
+    // remove the coverage layers too (results stay available in History).
+    clearCoverageLayers();
     setRuns({});
-    notify("תוצאות נוקו");
+    notify("תוצאות נוקו מהמפה (זמינות בלשונית היסטוריה)");
   }
 
   const step1Done = selectedSiteIds.length > 0;
@@ -263,9 +267,13 @@ export default function AnalysisPanel() {
         </div>
 
         {sites.length === 0 ? (
-          <button className={styles.actionBtn} onClick={() => setActiveTab("new")}>
-            + אין אתרים – הקם אתר חדש מכאן
-          </button>
+          writable ? (
+            <button className={styles.actionBtn} onClick={() => setActiveTab("new")}>
+              + אין אתרים – הקם אתר חדש מכאן
+            </button>
+          ) : (
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>אין אתרים להצגה</div>
+          )
         ) : (
           <>
             <div className={styles.siteCheckList}>
@@ -292,13 +300,15 @@ export default function AnalysisPanel() {
                 );
               })}
             </div>
-            <button
-              className={styles.actionBtn}
-              style={{ marginTop: 8 }}
-              onClick={() => setActiveTab("new")}
-            >
-              + הקם אתר חדש
-            </button>
+            {writable && (
+              <button
+                className={styles.actionBtn}
+                style={{ marginTop: 8 }}
+                onClick={() => setActiveTab("new")}
+              >
+                + הקם אתר חדש
+              </button>
+            )}
           </>
         )}
       </div>
@@ -320,7 +330,7 @@ export default function AnalysisPanel() {
         ) : (
           <div style={{fontSize: 12, color: "var(--text-dim)"}}>
             <span style={{color: "var(--accent2)"}}>תא שטח הוגדר.</span> ניתן לגרור אותו במפה.
-            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={() => { setBbox(null); setCoverageResults([]); setRuns({}); }}>✕ אפס ובחר חדש</button>
+            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={() => { setBbox(null); clearCoverageLayers(); setRuns({}); }}>✕ אפס ובחר חדש</button>
           </div>
         )}
       </div>
@@ -344,9 +354,13 @@ export default function AnalysisPanel() {
             🏢 תכסית<br /><small>DSM + מבנים</small>
           </button>
         </div>
-        <button className={styles.runBtn} onClick={runAnalysis} disabled={!readyToRun || isCalculating}>
-          {isCalculating ? "⏳ מחשב כיסוי..." : `▶ הרץ חישוב${selectedSiteIds.length > 1 ? ` (${selectedSiteIds.length} אתרים)` : ""}`}
-        </button>
+        {writable ? (
+          <button className={styles.runBtn} onClick={runAnalysis} disabled={!readyToRun || isCalculating}>
+            {isCalculating ? "⏳ מחשב כיסוי..." : `▶ הרץ חישוב${selectedSiteIds.length > 1 ? ` (${selectedSiteIds.length} אתרים)` : ""}`}
+          </button>
+        ) : (
+          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{READ_ONLY_NOTE}</div>
+        )}
         {Object.keys(runs).length > 0 && (
           <div className={styles.runList}>
             {Object.entries(runs).map(([id, run]) => {

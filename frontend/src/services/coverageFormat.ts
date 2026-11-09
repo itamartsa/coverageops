@@ -85,12 +85,15 @@ export function collectWarnings(
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/** Layer-manager id of a coverage result's map layer. */
+export const coverageLayerId = (resultId: number) => `coverage-${resultId}`;
+
 /** Builds a layer-manager entry for a coverage result. */
 export function layerFromResult(result: CoverageResult, siteName: string): MapLayer {
   const hasBbox = isNum(result.sw_lat) && isNum(result.sw_lon)
                && isNum(result.ne_lat) && isNum(result.ne_lon);
   return {
-    id:           `coverage-${result.id}`,
+    id:           coverageLayerId(result.id),
     name:         `${siteName} — ${result.mode}`,
     type:         "coverage",
     visible:      true,
@@ -103,6 +106,7 @@ export function layerFromResult(result: CoverageResult, siteName: string): MapLa
     thresholdDbm: result.threshold_dbm ?? null,
     demSource:    result.dem_source ?? null,
     siteName,
+    siteId:       result.site_id,
     createdAt:    result.created_at,
   };
 }

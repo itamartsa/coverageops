@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { sitesApi } from "../services/api";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
+import { canWrite } from "../lib/roles";
 import styles from "./SitesList.module.css";
 
 const FREQ_COLORS: Record<number, string> = {
@@ -13,7 +14,8 @@ const FREQ_COLORS: Record<number, string> = {
 export default function SitesList() {
   const { sites, activeSiteId, setActiveSite, removeSite, setEditingSite,
           setDrawMode, setActiveTab, setBbox, setCoverageResult,
-          setSelectedSiteIds } = useStore();
+          setSelectedSiteIds, user } = useStore();
+  const writable = canWrite(user?.role);
   const qc = useQueryClient();
 
   const deleteMut = useMutation({
@@ -21,6 +23,11 @@ export default function SitesList() {
     onSuccess: (_, id) => {
       removeSite(id);
       setCoverageResult(null);
+      // The backend deleted the site's results too → drop their coverage layers from the map
+      const st = useStore.getState();
+      st.mapLayers
+        .filter((l) => l.type === "coverage" && l.siteId === id)
+        .forEach((l) => st.removeMapLayer(l.id));
       setSelectedSiteIds(useStore.getState().selectedSiteIds.filter((x) => x !== id));
       qc.invalidateQueries({ queryKey: ["sites"] });
       notify("אתר נמחק");
@@ -31,7 +38,7 @@ export default function SitesList() {
     return (
       <div className={styles.empty}>
         <div className={styles.emptyIcon}>📡</div>
-        אין אתרי קשר מוגדרים<br />עבור ל"הקמת אתר" להוסיף
+        אין אתרי קשר מוגדרים{writable && <><br />עבור ל"הקמת אתר" להוסיף</>}
       </div>
     );
   }
@@ -76,7 +83,7 @@ export default function SitesList() {
             ⚡ {site.tx_power} dBm &nbsp;|&nbsp; 📶 {site.rx_threshold} dBm
           </div>
           {site.notes && <div className={styles.notes}>{site.notes}</div>}
-          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+          {writable && <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
             <button
               className={styles.editBtn}
               onClick={(e) => { 
@@ -95,7 +102,7 @@ export default function SitesList() {
             >
               ✕ מחק
             </button>
-          </div>
+          </div>}
         </div>
       ))}
 

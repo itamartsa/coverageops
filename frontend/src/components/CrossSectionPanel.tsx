@@ -3,6 +3,7 @@ import { apiErrorText, apiErrorTextAsync, coverageApi, type CrossSectionResult }
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import InfoTooltip from "./InfoTooltip";
+import { canWrite, READ_ONLY_NOTE } from "../lib/roles";
 import { collectWarnings, demLabel, demStatus, fmtCoveredVsThreshold, fmtNum, fmtPct } from "../services/coverageFormat";
 import styles from "./CrossSectionPanel.module.css";
 
@@ -34,8 +35,9 @@ export default function CrossSectionPanel() {
     sites, analysisMode, setAnalysisMode,
     drawMode, setDrawMode,
     routeWaypoints, setRouteWaypoints,
-    setCrossSectionResult,
+    setCrossSectionResult, user,
   } = useStore();
+  const writable = canWrite(user?.role);
 
   const [siteId,    setSiteId]    = useState<number | null>(null);
   const [result,    setResult]    = useState<CrossSectionResult | null>(null);
@@ -271,14 +273,18 @@ export default function CrossSectionPanel() {
       {/* Step 4 – Run */}
       <div className={`${styles.stepCard} ${readyToRun ? styles.stepDone : ""}`}>
         <div className={styles.stepTitle}>4. הרץ חתך רדיו</div>
-        <button
-          className={styles.runBtn}
-          onClick={runAnalysis}
-          disabled={!readyToRun || loading}
-        >
-          {loading ? "⏳ מחשב חתך..." : "▶ הרץ חתך רדיו"}
-        </button>
-        {result && (
+        {writable ? (
+          <button
+            className={styles.runBtn}
+            onClick={runAnalysis}
+            disabled={!readyToRun || loading}
+          >
+            {loading ? "⏳ מחשב חתך..." : "▶ הרץ חתך רדיו"}
+          </button>
+        ) : (
+          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{READ_ONLY_NOTE}</div>
+        )}
+        {result && writable && (
           <button
             className={`${styles.btn} ${styles.exportBtn}`}
             onClick={downloadDocx}

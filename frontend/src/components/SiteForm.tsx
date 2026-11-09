@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { sitesApi, type SiteCreate, DEFAULT_ANT_HEIGHT_M } from "../services/api";
+import { apiErrorText, sitesApi, type SiteCreate, DEFAULT_ANT_HEIGHT_M } from "../services/api";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import InfoTooltip from "./InfoTooltip";
@@ -82,7 +82,8 @@ export default function SiteForm() {
       notify(`✅ אתר "${site.name}" ${editingSite ? "עודכן" : "נוסף"}`);
     },
     onError: (err: any) => {
-      notify(`⚠ ${err.response?.data?.detail ?? "שגיאה בשמירת האתר"}`);
+      // detail may be a FastAPI validation list (422) — never render "[object Object]"
+      notify(`⚠ ${apiErrorText(err, "שגיאה בשמירת האתר")}`);
     },
   });
 
@@ -95,7 +96,9 @@ export default function SiteForm() {
     if (!form.name.trim()) { notify("⚠ נא להזין שם אתר"); return; }
     const lat = parseFloat(form.lat as string);
     const lon = parseFloat(form.lon as string);
-    if (isNaN(lat) || isNaN(lon)) { notify("⚠ נא להזין קואורדינטות תקינות"); return; }
+    if (isNaN(lat) || isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+      notify("⚠ נא להזין קואורדינטות תקינות"); return;
+    }
 
     mut.mutate({
       name: form.name, lat, lon,

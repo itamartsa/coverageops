@@ -6,6 +6,7 @@ import HistoryPanel from "./HistoryPanel";
 import CrossSectionPanel from "./CrossSectionPanel";
 import LayersPanel from "./LayersPanel";
 import LinkPanel from "./LinkPanel";
+import { canWrite } from "../lib/roles";
 import styles from "./Sidebar.module.css";
 
 const TABS = [
@@ -19,12 +20,15 @@ const TABS = [
 ] as const;
 
 export default function Sidebar() {
-  const { activeTab, setActiveTab, editingSite } = useStore();
+  const { activeTab, setActiveTab, editingSite, user } = useStore();
+  const writable = canWrite(user?.role);
+  // VIEWER is read-only: no "new site" tab (and never render the form, e.g. from a persisted tab)
+  const tabs = TABS.filter((t) => writable || t.key !== "new");
 
   return (
     <aside className={styles.sidebar}>
       <nav className={styles.tabs}>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             className={`${styles.tab} ${activeTab === t.key ? styles.active : ""}`}
@@ -37,7 +41,7 @@ export default function Sidebar() {
 
       <div className={styles.content}>
         {activeTab === "sites"        && <SitesList />}
-        {activeTab === "new"          && <SiteForm />}
+        {activeTab === "new" && writable && <SiteForm />}
         {activeTab === "analysis"     && <AnalysisPanel />}
         {activeTab === "crosssection" && <CrossSectionPanel />}
         {activeTab === "link"         && <LinkPanel />}

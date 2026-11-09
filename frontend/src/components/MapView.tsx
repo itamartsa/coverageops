@@ -9,6 +9,7 @@ import {
   cellSitePopupHtml, cellSitePromoteFormHtml, cellSiteRfFormHtml, isManualHeight,
 } from "../lib/cellSites";
 import { levelColor, levelHe, fmtDb, fmtKm } from "../lib/link";
+import { canWrite } from "../lib/roles";
 import { fmtDbm } from "../services/coverageFormat";
 import styles from "./MapView.module.css";
 
@@ -78,6 +79,10 @@ export default function MapView() {
   // Coverage PNG overlays — keyed by layer id
   const covOverlaysRef  = useRef<Map<string, L.ImageOverlay>>(new Map());
   const covBlobsRef     = useRef<Map<string, string>>(new Map());
+  // Coverage PNGs currently being fetched — prevents duplicate fetches when
+  // mapLayers changes mid-flight (each duplicate used to leave an orphaned
+  // overlay on the map that no "clear"/"remove" could reach).
+  const covPendingRef   = useRef<Set<string>>(new Set());
   // Special overlays
   const demOverlayRef   = useRef<L.ImageOverlay | null>(null);
   const demBlobUrlRef   = useRef<string | null>(null);
@@ -182,6 +187,8 @@ export default function MapView() {
     });
 
     mapRef.current = map;
+    // Dev builds only: expose the map so end-to-end tests can convert lat/lon ↔ screen points
+    if (import.meta.env.DEV) (window as unknown as { __coverageopsMap?: L.Map }).__coverageopsMap = map;
   }, []);
 
   // ── Drag & Drop Map Draw Handler ─────────────────────────────────────────────
@@ -452,6 +459,21 @@ export default function MapView() {
       popup.setContent(popupHtml(d));
     }
 
+    /**
+     * Shows the popup with `formHtml` in one of its slots. The form must be part of the
+     * content passed to setContent(): popup.update() re-renders the stored content string,
+     * so a form injected into the DOM afterwards would be wiped immediately.
+     */
+    function showForm(popup: L.Popup, d: CellSiteDetail, slot: "height" | "rf" | "actions",
+                      formHtml: string, focusField: string) {
+      const tpl = document.createElement("div");
+      tpl.innerHTML = popupHtml(d);
+      const el = tpl.querySelector<HTMLElement>(`[data-cs-${slot}]`);
+      if (el) el.innerHTML = formHtml;
+      popup.setContent(tpl.innerHTML);
+      popup.getElement()?.querySelector<HTMLElement>(`[data-cs-field="${focusField}"]`)?.focus();
+    }
+
     /** Cell-site ids with a promote request in flight (prevents double submit). */
     const promoting = new Set<number>();
 
@@ -504,15 +526,12 @@ export default function MapView() {
       const val = (f: string) => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-cs-field="${f}"]`)?.value.trim() ?? "";
 
       if (action === "edit" && canEdit && hSlot) {
-        popup.setContent(popupHtml(d));            // close any other open form first
-        const slot = popup.getElement()?.querySelector<HTMLElement>("[data-cs-height]");
-        if (slot) { slot.innerHTML = cellSiteHeightFormHtml(d); popup.update(); slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.focus(); }
+        // Fresh popup (closes any other open form) with the height form in its slot
+        showForm(popup, d, "height", cellSiteHeightFormHtml(d), "h");
         return;
       }
       if (action === "edit-rf" && canEdit && rfSlot) {
-        popup.setContent(popupHtml(d));
-        const slot = popup.getElement()?.querySelector<HTMLElement>("[data-cs-rf]");
-        if (slot) { slot.innerHTML = cellSiteRfFormHtml(d); popup.update(); slot.querySelector<HTMLInputElement>('[data-cs-field="tx"]')?.focus(); }
+        showForm(popup, d, "rf", cellSiteRfFormHtml(d), "tx");
         return;
       }
       if (action === "cancel") {
@@ -532,8 +551,7 @@ export default function MapView() {
       if ((action === "promote" || action === "promote-go") && (!canPromoteCellSite(role()) || promoting.has(d.id))) return;
       if (action === "promote" && actSlot) {
         if (cellSiteBands(d).length > 1) {
-          actSlot.innerHTML = cellSitePromoteFormHtml(d);
-          popup.update();
+          showForm(popup, d, "actions", cellSitePromoteFormHtml(d), "pfreq");
           return;
         }
         // single band → go straight away
@@ -582,7 +600,13 @@ export default function MapView() {
       el.addEventListener("click", (ev) => {
         const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-cs-action]");
         const root = btn?.closest<HTMLElement>("[data-cellsite-id]");
-        if (btn && root) { ev.preventDefault(); void handle(e.popup, root, btn.dataset.csAction!); }
+        if (btn && root) {
+          ev.preventDefault();
+          // The action re-renders the popup, detaching the clicked button; Leaflet would then
+          // no longer see the click as inside the popup and close it (closePopupOnClick).
+          ev.stopPropagation();
+          void handle(e.popup, root, btn.dataset.csAction!);
+        }
       });
       el.addEventListener("keydown", (ev) => {
         const t = ev.target as HTMLElement;
@@ -626,9 +650,18 @@ export default function MapView() {
       }
 
       if (!layer.visible || !layer.resultId || !layer.bbox) return;
+      if (covPendingRef.current.has(layer.id)) return;   // already fetching
 
+      covPendingRef.current.add(layer.id);
       try {
         const blobUrl = await coverageApi.resultPng(layer.resultId, layer.bbox);
+        // The layer may have been removed/hidden (e.g. "נקה תוצאות") while the
+        // PNG was loading — re-check the CURRENT store state before drawing.
+        const current = useStore.getState().mapLayers.find((l) => l.id === layer.id);
+        if (!current || mapRef.current !== map || covOverlaysRef.current.has(layer.id)) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
         covBlobsRef.current.set(layer.id, blobUrl);
         const overlay = L.imageOverlay(
           blobUrl,
@@ -636,8 +669,9 @@ export default function MapView() {
           { opacity: 1, interactive: false, zIndex: 300 },
         );
         covOverlaysRef.current.set(layer.id, overlay);
-        if (layer.visible) overlay.addTo(map);
+        if (current.visible) overlay.addTo(map);
       } catch { /* network issue — silent */ }
+      finally { covPendingRef.current.delete(layer.id); }
     });
   }, [mapLayers]);
 
@@ -711,6 +745,7 @@ export default function MapView() {
         `);
 
       marker.on("contextmenu", () => {
+        if (!canWrite(useStore.getState().user?.role)) return;   // VIEWER: read-only
         if (marker.dragging && !marker.dragging.enabled()) {
           marker.closePopup();
           marker.dragging.enable();

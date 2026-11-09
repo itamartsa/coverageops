@@ -37,6 +37,7 @@ export interface MapLayer {
   thresholdDbm?: number | null;   // threshold_dbm returned with the result; null = legacy (never the site's current rx_threshold)
   demSource?:    string | null;   // "terrarium" = real DEM; anything else = simulated
   siteName?:   string;
+  siteId?:     number;   // analysis site the result belongs to (absent on older persisted layers)
   createdAt?:  string;
 }
 
@@ -126,6 +127,8 @@ interface AppState {
   mapLayers: MapLayer[];
   addMapLayer:    (layer: MapLayer) => void;
   removeMapLayer: (id: string) => void;
+  /** Remove every coverage-result layer from the map/layer list (results stay in history). */
+  clearCoverageLayers: () => void;
   toggleMapLayer: (id: string) => void;
   renameMapLayer: (id: string, name: string) => void;
 
@@ -233,6 +236,12 @@ export const useStore = create<AppState>()(
       removeMapLayer: (id) =>
         set((s) => ({
           mapLayers: s.mapLayers.filter((l) => l.id !== id),
+        })),
+
+      clearCoverageLayers: () =>
+        set((s) => ({
+          mapLayers: s.mapLayers.filter((l) => l.type !== "coverage"),
+          coverageResults: [],
         })),
 
       toggleMapLayer: (id) =>

@@ -3,6 +3,7 @@
  * Data: data.gov.il, Ministry of Environmental Protection (antennaactive + antenna_hakama).
  */
 import type { CellSiteDetail, CellSiteHeight, CellSiteRf } from "../services/api";
+import { canWrite } from "./roles";
 
 export const CELL_OPERATORS: Record<string, { label: string; color: string; note?: string }> = {
   PHI:       { label: "PHI",    color: "#f97316", note: "תשתית משותפת של הוט מובייל ופרטנר" },
@@ -27,7 +28,7 @@ const safeUrl = (u?: string | null) =>
   u && /^https?:\/\//.test(u) ? u.replace(/^http:/, "https:") : null;
 
 /** Roles allowed to edit a site's antenna height (mirrors the backend) */
-export const canEditCellSiteHeight = (role?: string | null) => role === "ADMIN" || role === "OPERATOR";
+export const canEditCellSiteHeight = canWrite;
 
 /** Marker style tweak: sites whose height was entered by a user get a dark, thicker ring. */
 export const isManualHeight = (h: Pick<CellSiteHeight, "height_source">) => h.height_source === "manual";

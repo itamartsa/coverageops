@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { coverageApi, triggerBlobDownload, type HistoryItem, type CoverageReport } from "../services/api";
 import {
   DASH, demLabel, demStatus, fmtCoveredVsThreshold, fmtDbm, fmtNum, fmtPct, fmtThresholdLabel,
-  isLegacyThreshold, layerFromResult,
+  coverageLayerId, isLegacyThreshold, layerFromResult,
 } from "../services/coverageFormat";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
+import { canWrite } from "../lib/roles";
 import styles from "./HistoryPanel.module.css";
 
 const MODE_LABEL: Record<string, string> = { DTM: "טופוגרפיה", DSM: "תכסית" };
@@ -227,7 +228,8 @@ ${dqSectionHTML}
 // ── Component ────────────────────────────────────────────────────────────────
 export default function HistoryPanel() {
   const { setCoverageResults, setBbox, setActiveTab, addMapLayer,
-          crossSectionResult, setCrossSectionResult, setRouteWaypoints } = useStore();
+          crossSectionResult, setCrossSectionResult, setRouteWaypoints, user } = useStore();
+  const writable = canWrite(user?.role);
   const qc = useQueryClient();
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [loadingId, setLoadingId]     = useState<number | null>(null);
@@ -240,7 +242,11 @@ export default function HistoryPanel() {
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => coverageApi.deleteResult(id),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      // Also drop it from the map / layer list / result cards — the result no longer exists
+      const st = useStore.getState();
+      st.removeMapLayer(coverageLayerId(id));
+      st.setCoverageResults(st.coverageResults.filter((r) => r.id !== id));
       qc.invalidateQueries({ queryKey: ["coverage-history"] });
       notify("✅ תוצאה נמחקה");
     },
@@ -383,13 +389,16 @@ export default function HistoryPanel() {
             >
               {geojsonId === item.id ? "מוריד..." : "⬇ GeoJSON"}
             </button>
-            <button
-              className={`${styles.btn} ${styles.del}`}
-              onClick={() => deleteMut.mutate(item.id)}
-              disabled={deleteMut.isPending}
-            >
-              ✕
-            </button>
+            {writable && (
+              <button
+                className={`${styles.btn} ${styles.del}`}
+                onClick={() => deleteMut.mutate(item.id)}
+                disabled={deleteMut.isPending}
+                title="מחק תוצאה"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </div>
       ))}

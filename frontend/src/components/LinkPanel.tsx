@@ -22,6 +22,7 @@ import {
 import { notify } from "./Notification";
 import InfoTooltip from "./InfoTooltip";
 import LinkProfileChart from "./LinkProfileChart";
+import { canWrite, READ_ONLY_NOTE } from "../lib/roles";
 import cs from "./CrossSectionPanel.module.css";
 import styles from "./LinkPanel.module.css";
 
@@ -64,8 +65,9 @@ export default function LinkPanel() {
     linkResult, setLinkResult,
     bestServersResult, setBestServersResult,
     highlightedServerId, setHighlightedServerId,
-    linkPickTransmitter, setLinkPickTransmitter,
+    linkPickTransmitter, setLinkPickTransmitter, user,
   } = useStore();
+  const writable = canWrite(user?.role);
   const qc = useQueryClient();
 
   const [infoOpen, setInfoOpen] = useState(false);
@@ -531,7 +533,9 @@ export default function LinkPanel() {
           </div>
         )}
 
-        {linkSubMode === "link" ? (
+        {!writable ? (
+          <div className={styles.hint}>{READ_ONLY_NOTE}</div>
+        ) : linkSubMode === "link" ? (
           <button className={cs.runBtn} onClick={() => runLink()} disabled={!txReady || !rxReady || loading}>
             {loading ? "⏳ מחשב קישור..." : "▶ חשב קישור"}
           </button>
@@ -556,7 +560,7 @@ export default function LinkPanel() {
           result={bestServersResult}
           highlighted={highlightedServerId}
           onHighlight={(id) => setHighlightedServerId(highlightedServerId === id ? null : id)}
-          onAnalyse={analyseServer}
+          onAnalyse={writable ? analyseServer : undefined}
           busy={loading}
         />
       )}
@@ -582,7 +586,7 @@ export default function LinkPanel() {
             <div className={styles.histActions} onClick={(e) => e.stopPropagation()}>
               <button className={styles.iconBtn} title="דוח Word" disabled={exporting === h.id}
                       onClick={() => downloadDocx(h.id)}>{exporting === h.id ? "…" : "⬇"}</button>
-              {confirmDel === h.id ? (
+              {!writable ? null : confirmDel === h.id ? (
                 <>
                   <button className={`${styles.iconBtn} ${styles.iconDanger}`} onClick={() => deleteHistory(h.id)}>מחק</button>
                   <button className={styles.iconBtn} onClick={() => setConfirmDel(null)}>✕</button>
@@ -720,7 +724,8 @@ function BestServersList({ result, highlighted, onHighlight, onAnalyse, busy }: 
   result: BestServersResult;
   highlighted: number | null;
   onHighlight: (id: number) => void;
-  onAnalyse: (e: BestServerEntry) => void;
+  /** Omitted for read-only users (no "analyse" button). */
+  onAnalyse?: (e: BestServerEntry) => void;
   busy: boolean;
 }) {
   const warnings = collectWarnings(result.warnings, result.dem_source);
@@ -770,10 +775,12 @@ function BestServersList({ result, highlighted, onHighlight, onAnalyse, busy }: 
               {" · "}אנטנה {fmtNum(c.ant_height_m, 1)} מ'
               {c.height_source !== "manual" && <> <span className={styles.estTag}>⚠</span></>}
             </div>
-            <button className={`${cs.btn} ${cs.small} ${styles.serverBtn}`} disabled={busy}
-                    onClick={(ev) => { ev.stopPropagation(); onAnalyse(e); }}>
-              🎯 נתח קישור מלא
-            </button>
+            {onAnalyse && (
+              <button className={`${cs.btn} ${cs.small} ${styles.serverBtn}`} disabled={busy}
+                      onClick={(ev) => { ev.stopPropagation(); onAnalyse(e); }}>
+                🎯 נתח קישור מלא
+              </button>
+            )}
           </div>
         );
       })}
