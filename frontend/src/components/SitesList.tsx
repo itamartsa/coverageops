@@ -58,6 +58,14 @@ export default function SitesList() {
           </div>
           <div className={styles.detail}>
             🏔 {site.elevation_m ?? 0}מ' ASL &nbsp;|&nbsp; 🏗 {site.ant_height}מ' AGL
+            {site.ant_height_is_default && (
+              <span
+                title="גובה האנטנה הוא ערך ברירת מחדל ולא הוזן ידנית – לחץ 'ערוך' לעדכון"
+                style={{ color: "var(--warn)", marginInlineStart: 4 }}
+              >
+                (ברירת מחדל)
+              </span>
+            )}
           </div>
           <div className={styles.detail}>
             ⚡ {site.tx_power} dBm &nbsp;|&nbsp; 📶 {site.rx_threshold} dBm

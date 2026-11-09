@@ -2,7 +2,7 @@ import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 from app.core.database import get_db
@@ -13,13 +13,18 @@ from app.services.elevation import fetch_elevation
 router = APIRouter()
 log = logging.getLogger(__name__)
 
+# Antenna height (m AGL) applied when the user does not enter one.
+# Sites created this way are flagged so the UI can mark the value as a default.
+DEFAULT_ANT_HEIGHT_M = 10.0
+
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class SiteCreate(BaseModel):
     name:         str   = Field(..., min_length=1, max_length=128)
     lat:          float = Field(..., ge=-90, le=90)
     lon:          float = Field(..., ge=-180, le=180)
-    ant_height:   float = Field(6.0, ge=0.5, le=200)
+    # Omit (or null) to use DEFAULT_ANT_HEIGHT_M – the site is then flagged as default.
+    ant_height:   Optional[float] = Field(None, ge=0.5, le=200)
     frequency:    int   = Field(..., description="MHz – 700/850/900/1800/2100/2600/3500")
     tx_power:     float = Field(43.0, ge=0, le=70)
     rx_threshold: float = Field(-90.0, ge=-130, le=-40)
@@ -31,7 +36,7 @@ class SiteUpdate(BaseModel):
     name:         Optional[str]   = None
     lat:          Optional[float] = None
     lon:          Optional[float] = None
-    ant_height:   Optional[float] = None
+    ant_height:   Optional[float] = Field(None, ge=0.5, le=200)
     frequency:    Optional[int]   = None
     tx_power:     Optional[float] = None
     rx_threshold: Optional[float] = None
@@ -45,6 +50,7 @@ class SiteOut(BaseModel):
     lat:          float
     lon:          float
     ant_height:   float
+    ant_height_is_default: bool = False   # True = system default, not user-entered
     elevation_m:  Optional[float] = None   # null = unknown (DEM unavailable)
     frequency:    int
     tx_power:     float
@@ -53,6 +59,11 @@ class SiteOut(BaseModel):
     notes:        Optional[str]
     owner_id:     int
     created_at:   datetime
+
+    @field_validator("ant_height_is_default", mode="before")
+    @classmethod
+    def _null_is_false(cls, v):
+        return bool(v)            # legacy rows store NULL
 
     class Config:
         from_attributes = True
@@ -80,7 +91,12 @@ def create_site(
         raise HTTPException(400, detail=f"תדר לא תקין. תדרים מותרים: {VALID_FREQS}")
 
     elevation = _site_elevation(body.lat, body.lon)
-    site = Site(**body.model_dump(), elevation_m=elevation, owner_id=current_user.id)
+    data = body.model_dump()
+    is_default = data.get("ant_height") is None
+    if is_default:
+        data["ant_height"] = DEFAULT_ANT_HEIGHT_M
+    site = Site(**data, ant_height_is_default=is_default,
+                elevation_m=elevation, owner_id=current_user.id)
     db.add(site)
     db.commit()
     db.refresh(site)
@@ -109,6 +125,10 @@ def update_site(
     _check_access(site, current_user)
 
     updates = body.model_dump(exclude_none=True)
+
+    # An explicitly sent antenna height is a user value – clear the default flag.
+    if "ant_height" in updates:
+        updates["ant_height_is_default"] = False
 
     # Re-fetch elevation if coordinates changed
     new_lat = updates.get("lat", site.lat)

@@ -41,7 +41,10 @@ class Site(Base):
     name        = Column(String(128), nullable=False)
     lat         = Column(Float, nullable=False)
     lon         = Column(Float, nullable=False)
-    ant_height  = Column(Float, default=6.0)        # meters above ground
+    ant_height  = Column(Float, default=10.0)       # meters above ground (AGL)
+    # True while ant_height is the system default (10 m) and was never set by a user.
+    # NULL on rows created before this column existed = treated as False.
+    ant_height_is_default = Column(Boolean, nullable=True, default=False)
     elevation_m = Column(Float, nullable=True)  # meters ASL; NULL = unknown (DEM unavailable)
     frequency   = Column(Integer, nullable=False)   # MHz
     tx_power    = Column(Float, default=43.0)        # dBm EIRP

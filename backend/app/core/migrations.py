@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # DDL always matches the declared Column (BYTEA on PostgreSQL, BLOB on SQLite…).
 _ADDITIVE_COLUMNS: Tuple[Tuple[type, str], ...] = (
     (Site,           "elevation_m"),
+    (Site,           "ant_height_is_default"),
     (CoverageResult, "rssi_raster"),
     (CoverageResult, "resolution"),
     (CoverageResult, "threshold_dbm"),

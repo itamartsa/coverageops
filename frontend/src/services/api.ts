@@ -77,7 +77,8 @@ export const authApi = {
 export interface SiteCreate {
   name: string;
   lat: number; lon: number;
-  ant_height: number;
+  /** Omit to let the backend apply the default (10 m AGL) and flag it as default. */
+  ant_height?: number;
   frequency: number;
   tx_power: number;
   rx_threshold: number;
@@ -85,8 +86,14 @@ export interface SiteCreate {
   notes?: string;
 }
 
+/** Antenna height (m AGL) the backend uses when none is entered – keep in sync with sites.py. */
+export const DEFAULT_ANT_HEIGHT_M = 10;
+
 export interface Site extends SiteCreate {
   id: number;
+  ant_height: number;
+  /** True while ant_height is the system default and was never set by a user. */
+  ant_height_is_default: boolean;
   elevation_m: number;   // auto-fetched by backend from terrain tiles
   owner_id: number;
   created_at: string;

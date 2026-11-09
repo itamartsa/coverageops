@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { sitesApi, type SiteCreate } from "../services/api";
+import { sitesApi, type SiteCreate, DEFAULT_ANT_HEIGHT_M } from "../services/api";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import InfoTooltip from "./InfoTooltip";
@@ -28,13 +28,15 @@ const TIPS = {
 
 const defaults = {
   name: "", lat: "", lon: "",
-  ant_height: 6, frequency: 900,
+  ant_height: DEFAULT_ANT_HEIGHT_M, frequency: 900,
   tx_power: 43, rx_threshold: -90,
   max_radius: 350, notes: "",
 };
 
 export default function SiteForm() {
   const [form, setForm] = useState(defaults);
+  // false = antenna height is still the system default (sent as omitted → flagged on the site)
+  const [antHeightSet, setAntHeightSet] = useState(false);
   const { addSite, setActiveSite, setActiveTab, setDrawMode, pickedLocation, setPickedLocation, editingSite, setEditingSite } = useStore();
   const qc = useQueryClient();
 
@@ -58,8 +60,10 @@ export default function SiteForm() {
         max_radius: editingSite.max_radius,
         notes: editingSite.notes || "",
       });
+      setAntHeightSet(!editingSite.ant_height_is_default);
     } else {
       setForm(defaults);
+      setAntHeightSet(false);
     }
   }, [editingSite]);
 
@@ -74,6 +78,7 @@ export default function SiteForm() {
       setActiveTab("sites");
       setEditingSite(null);
       setForm(defaults);
+      setAntHeightSet(false);
       notify(`✅ אתר "${site.name}" ${editingSite ? "עודכן" : "נוסף"}`);
     },
     onError: (err: any) => {
@@ -94,7 +99,7 @@ export default function SiteForm() {
 
     mut.mutate({
       name: form.name, lat, lon,
-      ant_height: form.ant_height,
+      ant_height: antHeightSet ? form.ant_height : undefined,
       frequency: form.frequency,
       tx_power: form.tx_power,
       rx_threshold: form.rx_threshold,
@@ -147,7 +152,13 @@ export default function SiteForm() {
           <InfoTooltip text={TIPS.ant_height} />
         </label>
         <input className={styles.input} type="number" min="1" max="200"
-          value={form.ant_height} onChange={e => set("ant_height", +e.target.value)} />
+          value={form.ant_height}
+          onChange={e => { set("ant_height", +e.target.value); setAntHeightSet(true); }} />
+        {!antHeightSet && (
+          <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 4 }}>
+            ⚠ ערך ברירת מחדל ({DEFAULT_ANT_HEIGHT_M} מ') – ניתן לערוך לגובה האמיתי
+          </div>
+        )}
       </div>
 
       {/* Frequency */}

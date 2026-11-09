@@ -216,7 +216,8 @@ def generate_cross_section_docx(
     _add_kv_table(doc, [
         ("שם אתר",              stats.site_name),
         ("מיקום אנטנה",        f"{site_params['lat']:.5f}°N,  {site_params['lon']:.5f}°E"),
-        ("גובה אנטנה",         f"{site_params['ant_height']} מ' מעל קרקע"),
+        ("גובה אנטנה",         f"{site_params['ant_height']} מ' מעל קרקע"
+                                + (" (ערך ברירת מחדל)" if site_params.get("ant_height_is_default") else "")),
         ("תדר",                 f"{site_params['frequency']} MHz"),
         ("הספק שידור",         f"{site_params['tx_power']} dBm"),
         ("סף קבלה",            f"{site_params['rx_threshold']} dBm"),
