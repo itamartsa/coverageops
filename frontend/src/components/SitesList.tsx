@@ -53,6 +53,11 @@ export default function SitesList() {
             {site.frequency} MHz
           </span>
           <div className={styles.name}>{site.name}</div>
+          {site.params_source === "estimated" && (
+            <span className={styles.estBadge} title={site.source_note ?? "נוצר מאתר סלולרי אזרחי עם פרמטרים משוערים"}>
+              ⚠ משוער (אתר סלולרי)
+            </span>
+          )}
           <div className={styles.detail}>
             📍 {site.lat.toFixed(4)}, {site.lon.toFixed(4)}
           </div>

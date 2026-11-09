@@ -52,3 +52,12 @@
 }
 .submitBtn:hover:not(:disabled) { background: #33dfff; box-shadow: 0 0 16px rgba(0,212,255,0.35); }
 .submitBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.sourceNote {
+  background: rgba(255,179,71,0.08); border: 1px solid var(--warn);
+  border-right: 3px solid var(--warn);
+  padding: 8px 10px; margin-bottom: 14px;
+  font-size: 11px; color: var(--text); line-height: 1.6;
+}
+.sourceNote b { color: var(--warn); }
+.sourceHint { color: var(--text-dim); font-size: 10px; margin-top: 3px; }

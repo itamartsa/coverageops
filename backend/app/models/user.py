@@ -4,12 +4,13 @@ SQLAlchemy ORM models
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean,
-    DateTime, ForeignKey, Text, Enum, LargeBinary
+    DateTime, ForeignKey, Text, Enum, LargeBinary, Index, text
 )
 from sqlalchemy.orm import deferred, relationship
 import enum
 
 from app.core.database import Base
+from app.models import cell_site  # noqa: F401  (sites.cell_site_id -> cell_sites.id)
 
 
 class UserRole(str, enum.Enum):
@@ -51,12 +52,25 @@ class Site(Base):
     rx_threshold= Column(Float, default=-90.0)      # dBm
     max_radius  = Column(Float, default=350.0)      # km
     notes       = Column(Text, nullable=True)
+    # Provenance: set when the site was promoted from a civil cell site
+    cell_site_id  = Column(Integer, ForeignKey("cell_sites.id", ondelete="SET NULL"),
+                           nullable=True, index=True)
+    params_source = Column(String(16), nullable=True, default="manual",
+                           server_default="manual")      # manual | estimated
+    source_note   = Column(String(256), nullable=True)
     owner_id    = Column(Integer, ForeignKey("users.id"))
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     owner   = relationship("User", back_populates="sites")
     results = relationship("CoverageResult", back_populates="site", cascade="all, delete-orphan")
+
+    # One promoted Site per (owner, cell site); NULL cell_site_id = unconstrained.
+    __table_args__ = (
+        Index("uq_sites_owner_cell_site", "owner_id", "cell_site_id", unique=True,
+              postgresql_where=text("cell_site_id IS NOT NULL"),
+              sqlite_where=text("cell_site_id IS NOT NULL")),
+    )
 
 
 class AnalysisMode(str, enum.Enum):

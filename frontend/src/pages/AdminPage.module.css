@@ -592,3 +592,72 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* ── Device profiles card ───────────────────────────────────────────────────── */
+.sectionCard {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.sectionSub {
+  font-size: 12.5px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  color: #cbd5e1;
+  direction: ltr;
+  text-align: right;
+}
+
+.makeDefaultBtn {
+  background: rgba(100, 116, 139, 0.12);
+  border: 1px solid rgba(100, 116, 139, 0.25);
+  color: #94a3b8;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.makeDefaultBtn:hover {
+  border-color: rgba(0, 255, 136, 0.4);
+  color: #00ff88;
+}
+
+.fieldRow, .fieldRow3 {
+  display: grid;
+  gap: 12px;
+}
+.fieldRow  { grid-template-columns: 1fr 1fr; }
+.fieldRow3 { grid-template-columns: 1fr 1fr 1fr; }
+
+.fieldRow .field input, .fieldRow3 .field input { min-width: 0; }
+
+.checkLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #94a3b8;
+  cursor: pointer;
+}

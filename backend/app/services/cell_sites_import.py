@@ -21,7 +21,10 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.models.cell_site import CellSite, CellSiteSync, CellSiteTypeDefault
+from app.models.cell_site import (
+    CellSite, CellSiteBandDefault, CellSiteSync, CellSiteTypeDefault, sync_rf_source,
+)
+from app.models.user import Site
 from app.services.itm import itm_to_wgs84
 
 log = logging.getLogger(__name__)
@@ -55,6 +58,29 @@ HEIGHT_DEFAULTS: dict[str, tuple[float, str, str]] = {
     "small_indoor":    (3.0,  "אתר זעיר פנימי",   "בתוך מבנה — לא רלוונטי לכיסוי חוץ"),
     "other":           (15.0, "אחר",              ""),
 }
+
+# Estimated EIRP (dBm) per site type — the dataset has no RF data either.
+# Seeded into `cell_site_type_defaults.default_tx_power_dbm` (admin-editable).
+TX_POWER_DEFAULTS: dict[str, float] = {
+    "ground_mast": 43.0, "rooftop_mast": 43.0, "sting": 40.0, "tilted": 40.0,
+    "wireless_access": 30.0, "small_outdoor": 20.0, "small_indoor": 20.0, "other": 40.0,
+}
+
+# Representative band (MHz) per technology generation — seeded into
+# `cell_site_band_defaults` (admin-editable); fallback when the table is empty.
+# generation: (frequency_mhz, label_he)
+BAND_DEFAULTS: dict[str, tuple[int, str]] = {
+    "2G": (900,  "2G – GSM 900"),
+    "3G": (2100, "3G – UMTS 2100"),
+    "4G": (1800, "4G – LTE 1800"),
+    "5G": (3500, "5G – NR 3500"),
+}
+FALLBACK_BAND_MHZ = 900
+
+
+def band_label(generation: str, frequency_mhz: int) -> str:
+    """Label for an admin-changed band, e.g. "4G – 2300 MHz"."""
+    return f"{generation} – {int(frequency_mhz)} MHz"     # site with no known technology (e.g. construction requests)
 
 # Rough envelope of Israel + Judea/Samaria + Golan, to drop broken coordinates
 _LAT_RANGE = (29.3, 33.5)
@@ -177,7 +203,25 @@ def seed_type_defaults(db: Session) -> None:
     added = False
     for t, (h, label, note) in HEIGHT_DEFAULTS.items():
         if t not in have:
-            db.add(CellSiteTypeDefault(site_type=t, default_height_m=h, label_he=label, note_he=note))
+            db.add(CellSiteTypeDefault(site_type=t, default_height_m=h, label_he=label, note_he=note,
+                                       default_tx_power_dbm=TX_POWER_DEFAULTS.get(t)))
+            added = True
+    # tx power column added later: fill it only where still NULL (keeps admin edits)
+    for row in db.query(CellSiteTypeDefault).filter(CellSiteTypeDefault.default_tx_power_dbm.is_(None)).all():
+        row.default_tx_power_dbm = TX_POWER_DEFAULTS.get(row.site_type, TX_POWER_DEFAULTS["other"])
+        added = True
+    if added:
+        db.commit()
+    seed_band_defaults(db)
+
+
+def seed_band_defaults(db: Session) -> None:
+    """Insert missing rows of `cell_site_band_defaults` (never overwrites admin edits)."""
+    have = {g for (g,) in db.query(CellSiteBandDefault.generation).all()}
+    added = False
+    for g, (mhz, label) in BAND_DEFAULTS.items():
+        if g not in have:
+            db.add(CellSiteBandDefault(generation=g, frequency_mhz=mhz, label_he=label))
             added = True
     if added:
         db.commit()
@@ -203,9 +247,128 @@ def estimated_height_for(site_type: str | None, db: Session | None = None,
     return m.get(site_type or "other", m.get("other", HEIGHT_DEFAULTS["other"][0]))
 
 
+# ── Estimated RF (EIRP + frequency) ──────────────────────────────────────────
+def tx_power_defaults_map(db: Session) -> dict[str, float]:
+    """site_type -> estimated EIRP dBm (DB values over TX_POWER_DEFAULTS)."""
+    out = dict(TX_POWER_DEFAULTS)
+    try:
+        for t, p in db.query(CellSiteTypeDefault.site_type, CellSiteTypeDefault.default_tx_power_dbm).all():
+            if p is not None:
+                out[t] = p
+    except Exception as e:
+        log.warning("cell_site_type_defaults unavailable (%s) — using built-in tx power", e)
+        db.rollback()
+    return out
+
+
+def estimated_tx_power_for(site_type: str | None, db: Session | None = None,
+                           _cache: dict[str, float] | None = None) -> float:
+    """Estimated EIRP (dBm) for a site type (DB table, falling back to TX_POWER_DEFAULTS)."""
+    m = _cache if _cache is not None else (tx_power_defaults_map(db) if db is not None
+                                           else dict(TX_POWER_DEFAULTS))
+    return m.get(site_type or "other", m.get("other", TX_POWER_DEFAULTS["other"]))
+
+
+def band_defaults_map(db: Session | None = None) -> dict[str, int]:
+    """generation ("4G") -> MHz (DB values over BAND_DEFAULTS)."""
+    out = {g: v[0] for g, v in BAND_DEFAULTS.items()}
+    if db is None:
+        return out
+    try:
+        for g, f in db.query(CellSiteBandDefault.generation, CellSiteBandDefault.frequency_mhz).all():
+            if f:
+                out[g] = int(f)
+    except Exception as e:
+        log.warning("cell_site_band_defaults unavailable (%s) — using built-in bands", e)
+        db.rollback()
+    return out
+
+
+def bands_for(technologies: str | None, db: Session | None = None,
+              _cache: dict[str, int] | None = None) -> list[int]:
+    """Technologies "2G,4G,5G" -> sorted unique MHz list, e.g. [900, 1800, 3500]. Unknown generations ignored."""
+    m = _cache if _cache is not None else band_defaults_map(db)
+    gens = {g.strip().upper() for g in (technologies or "").split(",") if g.strip()}
+    return sorted({m[g] for g in gens if g in m})
+
+
+def default_band(technologies: str | None, db: Session | None = None,
+                 _cache: dict[str, int] | None = None) -> int:
+    """Lowest supported band (best propagation); FALLBACK_BAND_MHZ if none is known."""
+    b = bands_for(technologies, db, _cache)
+    return b[0] if b else FALLBACK_BAND_MHZ
+
+
+def backfill_estimated_rf(db: Session) -> int:
+    """Fill NULL tx_power_dbm / frequency_mhz with estimates (e.g. right after the columns were added)."""
+    tx = tx_power_defaults_map(db)
+    n = 0
+    for t, p in tx.items():
+        n += (db.query(CellSite)
+                .filter(CellSite.tx_power_dbm.is_(None), CellSite.site_type == t)
+                .update({CellSite.tx_power_dbm: p}, synchronize_session=False))
+    n += (db.query(CellSite)
+            .filter(CellSite.tx_power_dbm.is_(None))
+            .update({CellSite.tx_power_dbm: tx.get("other", TX_POWER_DEFAULTS["other"])},
+                    synchronize_session=False))
+    bands = band_defaults_map(db)
+    techs = [t for (t,) in db.query(CellSite.technologies)
+                             .filter(CellSite.frequency_mhz.is_(None)).distinct().all()]
+    for t in techs:
+        col = CellSite.technologies.is_(None) if t is None else CellSite.technologies == t
+        n += (db.query(CellSite)
+                .filter(CellSite.frequency_mhz.is_(None), col)
+                .update({CellSite.frequency_mhz: default_band(t, _cache=bands)},
+                        synchronize_session=False))
+    db.commit()
+    if n:
+        log.info("cell_sites: backfilled estimated RF on %d rows/fields", n)
+    return n
+
+
+def _primary_key(operator, site_code, source_id):
+    """Identity of a physical site across re-imports: operator + site code
+    (status is left out so a site moving construction -> active keeps its data)."""
+    return (operator, site_code if site_code else f"#src{source_id}")
+
+
 def _height_key(operator, site_code, status, source_id):
-    """Identity used to carry manual heights across a full re-import."""
-    return (operator, site_code if site_code else f"#src{source_id}", status)
+    """Status-qualified identity — used only when the primary key collides."""
+    return (*_primary_key(operator, site_code, source_id), status)
+
+
+class _IdentityIndex:
+    """Maps rows of the *old* table to rows of the new import.
+
+    Rows are matched on (operator, site_code). Where that key is not unique —
+    in the old table or in the new data — the status-qualified key is used
+    instead, so two rows sharing a site code never swap their values.
+    """
+
+    def __init__(self, old_rows):
+        """old_rows: iterable of (old_id, operator, site_code, status, source_id)."""
+        from collections import Counter
+        old_rows = list(old_rows)
+        cnt = Counter(_primary_key(op, code, src) for _i, op, code, _st, src in old_rows)
+        self.unique = {}
+        self.qualified = {}
+        for oid, op, code, st, src in old_rows:
+            pk = _primary_key(op, code, src)
+            if cnt[pk] == 1:
+                self.unique[pk] = oid
+            self.qualified[_height_key(op, code, st, src)] = oid
+
+    @staticmethod
+    def new_counts(new_rows):
+        """new_rows: iterable of (operator, site_code, source_id)."""
+        from collections import Counter
+        return Counter(_primary_key(op, code, src) for op, code, src in new_rows)
+
+    def lookup(self, operator, site_code, status, source_id, new_counts) -> int | None:
+        pk = _primary_key(operator, site_code, source_id)
+        if new_counts.get(pk, 0) == 1 and pk in self.unique:
+            return self.unique[pk]
+        return self.qualified.get(_height_key(operator, site_code, status, source_id))
 
 
 def backfill_estimated_heights(db: Session) -> int:
@@ -232,19 +395,30 @@ def backfill_estimated_heights(db: Session) -> int:
 def import_data(db: Session, data: dict) -> CellSiteSync:
     """Replace the whole table with `data` (atomic).
 
-    Antenna heights: every new row gets the estimate for its site type;
-    heights entered manually by users are carried over (matched by
-    operator + site_code + status).
+    Antenna heights and RF (EIRP / frequency, each with its own source):
+    every new row gets the estimate for its site type / technologies; values
+    entered manually are carried over per field (see _IdentityIndex for the
+    matching). Sites promoted from a cell site (`sites.cell_site_id`) are
+    re-linked to the new row.
     """
     defaults = height_defaults_map(db)
-    manual = {
-        _height_key(r.operator, r.site_code, r.status, r.source_id):
-            (r.ant_height_m, r.height_note, r.height_updated_at, r.height_updated_by)
-        for r in db.query(CellSite.operator, CellSite.site_code, CellSite.status, CellSite.source_id,
-                          CellSite.ant_height_m, CellSite.height_note,
-                          CellSite.height_updated_at, CellSite.height_updated_by)
-                   .filter(CellSite.height_source == "manual").all()
-    }
+    tx_defaults = tx_power_defaults_map(db)
+    bands = band_defaults_map(db)
+
+    index = _IdentityIndex(db.query(CellSite.id, CellSite.operator, CellSite.site_code,
+                                    CellSite.status, CellSite.source_id).all())
+    manual_h = {r.id: (r.ant_height_m, r.height_note, r.height_updated_at, r.height_updated_by)
+                for r in db.query(CellSite.id, CellSite.ant_height_m, CellSite.height_note,
+                                  CellSite.height_updated_at, CellSite.height_updated_by)
+                           .filter(CellSite.height_source == "manual").all()}
+    manual_rf = {r.id: r for r in
+                 db.query(CellSite.id, CellSite.tx_power_dbm, CellSite.tx_power_source,
+                          CellSite.frequency_mhz, CellSite.frequency_source, CellSite.rf_note,
+                          CellSite.rf_updated_at, CellSite.rf_updated_by)
+                   .filter((CellSite.tx_power_source == "manual")
+                           | (CellSite.frequency_source == "manual")).all()}
+    links = db.query(Site.id, Site.cell_site_id).filter(Site.cell_site_id.isnot(None)).all()
+
     sites, skipped = [], 0
     counts = {"active": 0, "construction": 0}
     for status in ("active", "construction"):
@@ -253,21 +427,41 @@ def import_data(db: Session, data: dict) -> CellSiteSync:
             if s is None:
                 skipped += 1
                 continue
-            m = manual.get(_height_key(s.operator, s.site_code, s.status, s.source_id))
-            if m:
-                s.ant_height_m, s.height_note, s.height_updated_at, s.height_updated_by = m
-                s.height_source = "manual"
-            else:
-                s.ant_height_m = estimated_height_for(s.site_type, _cache=defaults)
-                s.height_source = "estimated"
             sites.append(s)
             counts[status] += 1
 
     if counts["active"] < 1000:
         raise ValueError(f"Suspiciously few active sites ({counts['active']}) — aborting import")
 
+    new_counts = _IdentityIndex.new_counts((s.operator, s.site_code, s.source_id) for s in sites)
+    for s in sites:
+        old_id = index.lookup(s.operator, s.site_code, s.status, s.source_id, new_counts)
+        h = manual_h.get(old_id)
+        if h:
+            s.ant_height_m, s.height_note, s.height_updated_at, s.height_updated_by = h
+            s.height_source = "manual"
+        else:
+            s.ant_height_m = estimated_height_for(s.site_type, _cache=defaults)
+            s.height_source = "estimated"
+        rf = manual_rf.get(old_id)
+        if rf is not None and rf.tx_power_source == "manual" and rf.tx_power_dbm is not None:
+            s.tx_power_dbm, s.tx_power_source = rf.tx_power_dbm, "manual"
+        else:
+            s.tx_power_dbm = estimated_tx_power_for(s.site_type, _cache=tx_defaults)
+            s.tx_power_source = "estimated"
+        if rf is not None and rf.frequency_source == "manual" and rf.frequency_mhz is not None:
+            s.frequency_mhz, s.frequency_source = rf.frequency_mhz, "manual"
+        else:
+            s.frequency_mhz = default_band(s.technologies, _cache=bands)
+            s.frequency_source = "estimated"
+        if rf is not None:
+            s.rf_note, s.rf_updated_at, s.rf_updated_by = rf.rf_note, rf.rf_updated_at, rf.rf_updated_by
+        sync_rf_source(s)
+
     db.query(CellSite).delete()
     db.bulk_save_objects(sites)
+    if links:
+        _relink_sites(db, index, new_counts, links)
     sync = CellSiteSync(
         source=data.get("source"),
         data_fetched_at=data.get("fetched_at"),
@@ -279,6 +473,20 @@ def import_data(db: Session, data: dict) -> CellSiteSync:
     db.commit()
     log.info("cell_sites imported: %s (skipped %d, source=%s)", counts, skipped, sync.source)
     return sync
+
+
+def _relink_sites(db: Session, index: "_IdentityIndex", new_counts, links: list) -> None:
+    """Point promoted Sites at the re-imported cell rows (ids change on every import)."""
+    db.flush()
+    old_to_new = {}
+    for cid, op, code, st, src in db.query(CellSite.id, CellSite.operator, CellSite.site_code,
+                                           CellSite.status, CellSite.source_id).all():
+        oid = index.lookup(op, code, st, src, new_counts)
+        if oid is not None:
+            old_to_new[oid] = cid
+    for site_id, old_cell_id in links:
+        db.query(Site).filter(Site.id == site_id).update(
+            {Site.cell_site_id: old_to_new.get(old_cell_id)}, synchronize_session=False)
 
 
 def sync_live_or_snapshot(db: Session) -> CellSiteSync:
@@ -294,10 +502,11 @@ def sync_live_or_snapshot(db: Session) -> CellSiteSync:
 
 
 def ensure_loaded(db: Session) -> None:
-    """Called at startup: seed height defaults; if the table is empty, load the
-    bundled snapshot; otherwise backfill estimated heights on rows that lack one."""
+    """Called at startup: seed height/EIRP/band defaults; if the table is empty, load
+    the bundled snapshot; otherwise backfill estimated heights/RF on rows that lack them."""
     seed_type_defaults(db)
     if db.query(CellSite.id).first() is None and SNAPSHOT_PATH.exists():
         import_data(db, load_snapshot())
     else:
         backfill_estimated_heights(db)
+        backfill_estimated_rf(db)

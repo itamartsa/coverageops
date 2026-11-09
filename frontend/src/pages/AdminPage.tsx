@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { usersApi, UserOut } from "../services/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { usersApi, UserOut, deviceProfilesApi, apiErrorText } from "../services/api";
+import type { DeviceProfile, DeviceProfileIn } from "../services/api";
 import { useStore } from "../store/useStore";
 import styles from "./AdminPage.module.css";
 
@@ -190,6 +192,236 @@ function EditModal({ user, onClose, onSaved }: { user: UserOut; onClose: () => v
         </form>
       </div>
     </div>
+  );
+}
+
+// ── Device (receiver) profiles ───────────────────────────────────────────────
+type ProfileForm = {
+  key: string; name_he: string; rx_height_m: string; rx_sensitivity_dbm: string;
+  antenna_gain_dbi: string; description_he: string; is_default: boolean;
+};
+const EMPTY_PROFILE: ProfileForm = {
+  key: "", name_he: "", rx_height_m: "1.5", rx_sensitivity_dbm: "-100",
+  antenna_gain_dbi: "0", description_he: "", is_default: false,
+};
+
+function ProfileModal({ profile, onClose, onSaved }: {
+  profile: DeviceProfile | null; onClose: () => void; onSaved: () => void;
+}) {
+  const [form, setForm] = useState<ProfileForm>(profile ? {
+    key: profile.key, name_he: profile.name_he,
+    rx_height_m: String(profile.rx_height_m), rx_sensitivity_dbm: String(profile.rx_sensitivity_dbm),
+    antenna_gain_dbi: String(profile.antenna_gain_dbi ?? 0), description_he: profile.description_he ?? "",
+    is_default: profile.is_default,
+  } : EMPTY_PROFILE);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const set = (k: keyof ProfileForm, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    const h = Number(form.rx_height_m), sens = Number(form.rx_sensitivity_dbm), gain = Number(form.antenna_gain_dbi || 0);
+    if (!/^[a-z0-9_\-]+$/.test(form.key.trim())) { setError("מפתח: אותיות לטיניות קטנות, ספרות, _ או - בלבד"); return; }
+    if (!form.name_he.trim()) { setError("יש להזין שם"); return; }
+    if (!Number.isFinite(h) || h < 0.1 || h > 300) { setError("גובה מקלט: 0.1–300 מ'"); return; }
+    if (!Number.isFinite(sens) || sens < -150 || sens > -30) { setError("רגישות: −150 עד −30 dBm"); return; }
+    if (!Number.isFinite(gain) || gain < -20 || gain > 40) { setError("רווח אנטנה: −20 עד 40 dBi"); return; }
+    const payload: DeviceProfileIn = {
+      key: form.key.trim(), name_he: form.name_he.trim(),
+      rx_height_m: h, rx_sensitivity_dbm: sens, antenna_gain_dbi: gain,
+      description_he: form.description_he.trim() || null, is_default: form.is_default,
+    };
+    setLoading(true);
+    try {
+      if (profile) await deviceProfilesApi.update(profile.id, payload);
+      else await deviceProfilesApi.create(payload);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(apiErrorText(err, "שגיאה בשמירת הפרופיל"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className={styles.modalOverlay} onClick={onClose}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.modalHeader}>
+          <h2>{profile ? `✏️ עריכת פרופיל – ${profile.name_he}` : "➕ פרופיל מכשיר חדש"}</h2>
+          <button className={styles.closeBtn} onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className={styles.form}>
+          <div className={styles.fieldRow}>
+            <div className={styles.field}>
+              <label>שם</label>
+              <input type="text" value={form.name_he} maxLength={64} autoFocus placeholder="טלפון נייד"
+                     onChange={(e) => set("name_he", e.target.value)} />
+            </div>
+            <div className={styles.field}>
+              <label>מפתח</label>
+              <input type="text" value={form.key} maxLength={32} placeholder="handheld" dir="ltr"
+                     onChange={(e) => set("key", e.target.value)} />
+            </div>
+          </div>
+          <div className={styles.fieldRow3}>
+            <div className={styles.field}>
+              <label>גובה (מ' AGL)</label>
+              <input type="number" step="0.1" value={form.rx_height_m} onChange={(e) => set("rx_height_m", e.target.value)} />
+            </div>
+            <div className={styles.field}>
+              <label>רגישות (dBm)</label>
+              <input type="number" step="1" value={form.rx_sensitivity_dbm} onChange={(e) => set("rx_sensitivity_dbm", e.target.value)} />
+            </div>
+            <div className={styles.field}>
+              <label>רווח (dBi)</label>
+              <input type="number" step="0.5" value={form.antenna_gain_dbi} onChange={(e) => set("antenna_gain_dbi", e.target.value)} />
+            </div>
+          </div>
+          <div className={styles.field}>
+            <label>תיאור <span className={styles.optional}>(אופציונלי)</span></label>
+            <input type="text" value={form.description_he} maxLength={256}
+                   onChange={(e) => set("description_he", e.target.value)} />
+          </div>
+          <label className={styles.checkLine}>
+            <input type="checkbox" checked={form.is_default} onChange={(e) => set("is_default", e.target.checked)} />
+            פרופיל ברירת מחדל (יחליף את ברירת המחדל הנוכחית)
+          </label>
+          {error && <div className={styles.errorMsg}>{error}</div>}
+          <div className={styles.modalActions}>
+            <button type="button" className={styles.cancelBtn} onClick={onClose}>ביטול</button>
+            <button type="submit" className={styles.submitBtn} disabled={loading}>
+              {loading ? "שומר..." : profile ? "שמור שינויים" : "הוסף פרופיל"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function DeviceProfilesCard({ isAdmin }: { isAdmin: boolean }) {
+  const [profiles, setProfiles] = useState<DeviceProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState("");
+  const [editing, setEditing] = useState<DeviceProfile | null | "new">(null);
+  const [confirmDel, setConfirmDel] = useState<number | null>(null);
+  const [actionErr, setActionErr] = useState("");
+
+  async function fetchProfiles() {
+    setLoading(true);
+    try {
+      setProfiles(await deviceProfilesApi.list());
+      setLoadErr("");
+    } catch (err) {
+      setLoadErr(apiErrorText(err, "שגיאה בטעינת פרופילי מכשיר"));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { fetchProfiles(); }, []);
+
+  // After any write: reload this table and invalidate the link panel's cached list
+  const qc = useQueryClient();
+  async function refresh() {
+    qc.invalidateQueries({ queryKey: ["device-profiles"] });
+    await fetchProfiles();
+  }
+
+  async function handleDelete(id: number) {
+    setActionErr("");
+    try {
+      await deviceProfilesApi.remove(id);
+      await refresh();
+    } catch (err) {
+      setActionErr(apiErrorText(err, "שגיאה במחיקת הפרופיל"));   // e.g. "cannot delete the default profile"
+    } finally {
+      setConfirmDel(null);
+    }
+  }
+
+  async function makeDefault(p: DeviceProfile) {
+    setActionErr("");
+    try {
+      await deviceProfilesApi.update(p.id, { is_default: true });
+      await refresh();
+    } catch (err) {
+      setActionErr(apiErrorText(err, "שגיאה בעדכון ברירת המחדל"));
+    }
+  }
+
+  return (
+    <section className={styles.sectionCard}>
+      <div className={styles.sectionHead}>
+        <div>
+          <h2 className={styles.sectionTitle}>📱 פרופילי מכשיר</h2>
+          <div className={styles.sectionSub}>פרופילי מקלט לחישובי קישור נקודתי וחיפוש אתרים משרתים (גובה, רגישות, רווח אנטנה)</div>
+        </div>
+        {isAdmin && <button className={styles.addBtn} onClick={() => setEditing("new")}>➕ פרופיל חדש</button>}
+      </div>
+
+      {actionErr && <div className={styles.errorMsg} style={{ marginBottom: 12 }}>{actionErr}</div>}
+
+      {loading ? (
+        <div className={styles.loading}><div className={styles.spinner} /><span>טוען פרופילים...</span></div>
+      ) : loadErr ? (
+        <div className={styles.errorMsg}>{loadErr}</div>
+      ) : (
+        <div className={styles.tableWrapper}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>שם</th><th>מפתח</th><th>גובה (מ')</th><th>רגישות (dBm)</th><th>רווח (dBi)</th>
+                <th>תיאור</th><th>ברירת מחדל</th>{isAdmin && <th>פעולות</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {profiles.length === 0 ? (
+                <tr><td colSpan={isAdmin ? 8 : 7} className={styles.emptyRow}>אין פרופילים</td></tr>
+              ) : profiles.map((p) => (
+                <tr key={p.id} className={styles.row}>
+                  <td className={styles.fullName}>{p.name_he}</td>
+                  <td className={styles.username}>{p.key}</td>
+                  <td className={styles.num}>{p.rx_height_m}</td>
+                  <td className={styles.num}>{p.rx_sensitivity_dbm}</td>
+                  <td className={styles.num}>{p.antenna_gain_dbi ?? 0}</td>
+                  <td className={styles.meta}>{p.description_he || "—"}</td>
+                  <td>
+                    {p.is_default ? (
+                      <span className={`${styles.statusBadge} ${styles.statusActive}`}>★ ברירת מחדל</span>
+                    ) : isAdmin ? (
+                      <button className={styles.makeDefaultBtn} onClick={() => makeDefault(p)}>קבע כברירת מחדל</button>
+                    ) : "—"}
+                  </td>
+                  {isAdmin && (
+                    <td className={styles.actions}>
+                      <button className={styles.editBtn} onClick={() => setEditing(p)} title="ערוך">✏️</button>
+                      {confirmDel === p.id ? (
+                        <span className={styles.confirmDelete}>
+                          <button className={styles.confirmYes} onClick={() => handleDelete(p.id)}>מחק</button>
+                          <button className={styles.confirmNo} onClick={() => setConfirmDel(null)}>ביטול</button>
+                        </span>
+                      ) : (
+                        <button className={styles.deleteBtn} onClick={() => setConfirmDel(p.id)} title="מחק">🗑️</button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <ProfileModal
+          profile={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={refresh}
+        />
+      )}
+    </section>
   );
 }
 
@@ -399,6 +631,8 @@ export default function AdminPage() {
             </table>
           </div>
         )}
+
+        <DeviceProfilesCard isAdmin={currentUser?.role === "ADMIN"} />
       </main>
 
       {showCreate && (

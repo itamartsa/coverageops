@@ -89,6 +89,8 @@ export interface SiteCreate {
 /** Antenna height (m AGL) the backend uses when none is entered – keep in sync with sites.py. */
 export const DEFAULT_ANT_HEIGHT_M = 10;
 
+export type ParamsSource = "manual" | "estimated";
+
 export interface Site extends SiteCreate {
   id: number;
   ant_height: number;
@@ -97,6 +99,10 @@ export interface Site extends SiteCreate {
   elevation_m: number;   // auto-fetched by backend from terrain tiles
   owner_id: number;
   created_at: string;
+  // Provenance — set when the site was promoted from a civil cell site
+  cell_site_id?:  number | null;
+  params_source?: ParamsSource | null;
+  source_note?:   string | null;
 }
 
 export const sitesApi = {
@@ -289,6 +295,20 @@ export function triggerBlobDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Filename from a Content-Disposition header (RFC 5987 aware), or null. */
+function filenameFromDisposition(cd: string | undefined): string | null {
+  const m = cd?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+/** GET an authenticated binary endpoint and save it (server filename when given). */
+async function downloadAuthed(path: string, fallbackName: string): Promise<void> {
+  const res = await api.get(path, { responseType: "blob" });
+  const blob: Blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
+  triggerBlobDownload(blob, filenameFromDisposition(res.headers?.["content-disposition"]) ?? fallbackName);
+}
+
 export const coverageApi = {
   analyze:      async (req: CoverageRequest): Promise<CoverageResult> =>
     (await api.post("/api/coverage/analyze", req)).data,
@@ -331,12 +351,9 @@ export const coverageApi = {
     const blob: Blob = res.data instanceof Blob
       ? res.data
       : new Blob([JSON.stringify(res.data)], { type: "application/geo+json" });
-    let name = filename;
-    if (!name) {
-      const cd: string | undefined = res.headers?.["content-disposition"];
-      const m = cd?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-      name = m ? decodeURIComponent(m[1]) : `coverage_${id}.geojson`;
-    }
+    const name = filename
+      ?? filenameFromDisposition(res.headers?.["content-disposition"])
+      ?? `coverage_${id}.geojson`;
     triggerBlobDownload(blob, name);
   },
 
@@ -377,6 +394,7 @@ export const usersApi = {
 // ── Civil cellular sites (data.gov.il) ────────────────────────────────────────
 /** "estimated" = by site type (not in the government data); "manual" = entered by a user */
 export type CellSiteHeightSource = "estimated" | "manual";
+export type CellSiteRfSource = "estimated" | "manual";
 
 /** Antenna-height fields shared by the list row and the detail record */
 export interface CellSiteHeight {
@@ -386,7 +404,22 @@ export interface CellSiteHeight {
   height_updated_at: string | null;   // ISO, UTC ("…Z")
 }
 
-export interface CellSiteRow extends CellSiteHeight {
+/** RF fields (EIRP + frequency) — estimated by site type / lowest band unless entered by a user.
+ *  Optional: older backends don't send them. */
+export interface CellSiteRf {
+  tx_power_dbm?: number | null;        // EIRP, dBm
+  frequency_mhz?: number | null;
+  /** Legacy whole-record flag; prefer the per-field sources below when present */
+  rf_source?: CellSiteRfSource | null;
+  tx_power_source?: CellSiteRfSource | null;
+  frequency_source?: CellSiteRfSource | null;
+  rf_note?: string | null;
+  rf_updated_at?: string | null;
+  /** Representative bands (MHz) of the site's technologies, ascending */
+  bands?: number[] | null;
+}
+
+export interface CellSiteRow extends CellSiteHeight, CellSiteRf {
   id: number; lat: number; lon: number;
   operator: string; status: "active" | "construction";
   site_type: string; techs: string;
@@ -394,11 +427,19 @@ export interface CellSiteRow extends CellSiteHeight {
 
 export interface CellSiteTypeDefault {
   site_type: string; default_height_m: number;
+  default_tx_power_dbm?: number | null;
   label_he: string | null; note_he: string | null;
 }
 
-export interface CellSiteDetail extends CellSiteHeight {
+export interface CellSiteBandDefault {
+  generation: string;          // "2G" | "3G" | "4G" | "5G"
+  frequency_mhz: number;
+  label_he: string | null;
+}
+
+export interface CellSiteDetail extends CellSiteHeight, CellSiteRf {
   height_updated_by: string | null;
+  rf_updated_by?: string | null;
   id: number; status: string; operator: string; operator_he: string | null;
   site_code: string | null; city: string | null; address: string | null;
   authority: string | null; jurisdiction: string | null;
@@ -431,7 +472,19 @@ export interface CellSitesMeta {
     manual_count: number;
     estimated_count: number;
   };
+  rf_estimation?: {
+    note_he?: string | null;
+    type_defaults?: { site_type: string; label_he: string | null; default_tx_power_dbm: number | null }[];
+    band_defaults?: CellSiteBandDefault[];
+    manual_count?: number;
+    estimated_count?: number;
+  } | null;
 }
+
+export interface CellSiteRfUpdate { tx_power_dbm?: number; frequency_mhz?: number; note?: string | null }
+
+/** Result of promoting a civil cell site to an analysis Site. `created` = 201 (false = already existed). */
+export interface PromoteResult { site: Site; created: boolean }
 
 export const cellSitesApi = {
   list: async (): Promise<CellSiteRow[]> => {
@@ -449,12 +502,193 @@ export const cellSitesApi = {
   /** Drop the manual height and return to the estimate for the site type */
   resetHeight: async (id: number): Promise<CellSiteDetail> =>
     (await api.delete(`/api/cell-sites/${id}/height`)).data,
+  /** Record real EIRP and/or frequency (ADMIN/OPERATOR) — marks the site's RF "manual" */
+  setRf: async (id: number, body: CellSiteRfUpdate): Promise<CellSiteDetail> =>
+    (await api.patch(`/api/cell-sites/${id}/rf`, { ...body, note: body.note || null })).data,
+  /** Drop manual RF and return to the estimates (type EIRP, lowest band) */
+  resetRf: async (id: number): Promise<CellSiteDetail> =>
+    (await api.delete(`/api/cell-sites/${id}/rf`)).data,
+  /** Create (201) or return the caller's existing (200) analysis Site for this cell site */
+  promote: async (id: number, body: { frequency_mhz?: number; rx_threshold?: number } = {}): Promise<PromoteResult> => {
+    const res = await api.post(`/api/cell-sites/${id}/promote`, body);
+    return { site: res.data, created: res.status === 201 };
+  },
   typeDefaults: async (): Promise<CellSiteTypeDefault[]> =>
     (await api.get("/api/cell-sites/type-defaults")).data,
-  /** ADMIN — also updates every still-estimated site of that type */
-  setTypeDefault: async (site_type: string, default_height_m: number)
-    : Promise<CellSiteTypeDefault & { updated_sites: number }> =>
-    (await api.put(`/api/cell-sites/type-defaults/${encodeURIComponent(site_type)}`, { default_height_m })).data,
+  /** ADMIN — also updates every still-estimated site of that type.
+   *  A number = default_height_m (backward-compatible call form). */
+  setTypeDefault: async (
+    site_type: string,
+    body: number | { default_height_m?: number; default_tx_power_dbm?: number },
+  ): Promise<CellSiteTypeDefault & { updated_sites?: number; updated_rf_sites?: number }> =>
+    (await api.put(`/api/cell-sites/type-defaults/${encodeURIComponent(site_type)}`,
+      typeof body === "number" ? { default_height_m: body } : body)).data,
+  bandDefaults: async (): Promise<CellSiteBandDefault[]> =>
+    (await api.get("/api/cell-sites/band-defaults")).data,
+  /** ADMIN — RF-estimated sites whose default band changes get the new frequency */
+  setBandDefault: async (generation: string, frequency_mhz: number)
+    : Promise<CellSiteBandDefault & Record<string, unknown>> =>
+    (await api.put(`/api/cell-sites/band-defaults/${encodeURIComponent(generation)}`, { frequency_mhz })).data,
+};
+
+// ── Device (receiver) profiles ────────────────────────────────────────────────
+export interface DeviceProfileIn {
+  key: string;
+  name_he: string;
+  rx_height_m: number;
+  rx_sensitivity_dbm: number;
+  antenna_gain_dbi: number;
+  description_he?: string | null;
+  is_default?: boolean;
+}
+export interface DeviceProfile extends DeviceProfileIn {
+  id: number;
+  description_he: string | null;
+  is_default: boolean;
+}
+
+export const deviceProfilesApi = {
+  list:   async (): Promise<DeviceProfile[]> => (await api.get("/api/device-profiles/")).data,
+  create: async (p: DeviceProfileIn): Promise<DeviceProfile> => (await api.post("/api/device-profiles/", p)).data,
+  update: async (id: number, p: Partial<DeviceProfileIn>): Promise<DeviceProfile> =>
+    (await api.put(`/api/device-profiles/${id}`, p)).data,
+  remove: async (id: number): Promise<void> => { await api.delete(`/api/device-profiles/${id}`); },
+};
+
+// ── Point-to-point link ───────────────────────────────────────────────────────
+export type LinkMode = "DTM" | "DSM";
+export type TransmitterKind = "site" | "cell_site";
+
+export interface LinkReceiverIn {
+  lat: number; lon: number;
+  device_profile_id?: number;
+  height_agl?: number;
+  sensitivity_dbm?: number;
+  antenna_gain_dbi?: number;
+  name?: string;
+}
+
+export interface LinkRequest {
+  transmitter: { kind: TransmitterKind; id: number; frequency_mhz?: number };
+  receiver: LinkReceiverIn;
+  mode: LinkMode;
+  save?: boolean;
+}
+
+export interface LinkProfilePoint {
+  dist_km: number; lat: number; lon: number;
+  terrain_m: number | null;
+  los_m: number;
+  fresnel_m: number;
+}
+
+export interface LinkObstacle {
+  dist_km: number; lat: number; lon: number;
+  terrain_m: number; los_m: number; nu: number;
+}
+
+export interface LinkResult {
+  id?: number | null;
+  created_at?: string | null;
+  distance_km: number;
+  bearing_deg: number;
+  tx_h_asl?: number | null; rx_h_asl?: number | null;
+  tx_ground_asl?: number | null; rx_ground_asl?: number | null;
+  fspl_db?: number | null;
+  diffraction_db?: number | null;
+  clutter_db?: number | null;
+  height_gain_db?: number | null;
+  rx_gain_db?: number | null;
+  rssi_dbm: number;
+  margin_db: number;
+  level: string;
+  is_los: boolean;
+  fresnel_clearance_pct?: number | null;
+  worst_obstacle?: LinkObstacle | null;
+  profile?: LinkProfilePoint[] | null;
+  required_rx_height_m?: number | null;
+  dem_source?: DemSource | null;
+  dem_valid_pct?: number | null;
+  mode: string;
+  recommendations?: string[] | null;
+  transmitter: {
+    kind: TransmitterKind; id: number; name?: string | null;
+    lat: number; lon: number;
+    ant_height_m?: number | null; frequency_mhz?: number | null; tx_power_dbm?: number | null;
+    params_source?: ParamsSource | null;
+    estimated_fields?: string[] | null;
+  };
+  receiver: {
+    lat: number; lon: number;
+    height_agl?: number | null; sensitivity_dbm?: number | null; antenna_gain_dbi?: number | null;
+    profile_key?: string | null; profile_name?: string | null; name?: string | null;
+  };
+  warnings?: string[] | null;
+}
+
+export interface LinkSummary {
+  id: number;
+  created_at: string;
+  tx_name?: string | null;
+  tx_kind?: TransmitterKind | null;
+  rx_lat: number; rx_lon: number;
+  rx_profile_key?: string | null;
+  mode?: string | null;
+  distance_km?: number | null;
+  rssi_dbm?: number | null;
+  margin_db?: number | null;
+  level?: string | null;
+  is_los?: boolean | null;
+}
+
+export type BestServersOperator = "PHI" | "PELEPHONE" | "CELLCOM";
+export interface BestServersRequest {
+  receiver: LinkReceiverIn;
+  mode: LinkMode;
+  radius_km?: number;
+  operator?: BestServersOperator;
+  top_n?: number;
+  band_policy?: "lowest" | "highest";
+}
+
+export interface BestServerEntry {
+  rank: number;
+  cell_site: {
+    id: number; operator: string; operator_he?: string | null;
+    site_type?: string | null; site_type_he?: string | null;
+    city?: string | null; address?: string | null;
+    lat: number; lon: number;
+    ant_height_m?: number | null; height_source?: CellSiteHeightSource | null;
+    frequency_mhz?: number | null; tx_power_dbm?: number | null; rf_source?: CellSiteRfSource | null;
+    tx_power_source?: CellSiteRfSource | null; frequency_source?: CellSiteRfSource | null;
+    bands?: number[] | null;
+  };
+  link: {
+    distance_km: number; bearing_deg: number;
+    rssi_dbm: number; margin_db: number; level: string; is_los: boolean;
+    diffraction_db?: number | null; fresnel_clearance_pct?: number | null;
+  };
+}
+
+export interface BestServersResult {
+  receiver: LinkResult["receiver"];
+  candidates_evaluated?: number | null;
+  dem_source?: DemSource | null;
+  dem_valid_pct?: number | null;
+  results: BestServerEntry[];
+  warnings?: string[] | null;
+}
+
+export const linkApi = {
+  run: async (req: LinkRequest): Promise<LinkResult> =>
+    (await api.post("/api/link/", { save: true, ...req }, { timeout: 120000 })).data,
+  list: async (): Promise<LinkSummary[]> => (await api.get("/api/link/")).data,
+  get: async (id: number): Promise<LinkResult> => (await api.get(`/api/link/${id}`)).data,
+  remove: async (id: number): Promise<void> => { await api.delete(`/api/link/${id}`); },
+  /** Word report of a stored link result (auth header → blob download) */
+  downloadDocx: (id: number): Promise<void> => downloadAuthed(`/api/link/${id}/docx`, `link_${id}.docx`),
+  bestServers: async (req: BestServersRequest): Promise<BestServersResult> =>
+    (await api.post("/api/link/best-servers", req, { timeout: 180000 })).data,
 };
 
 export default api;

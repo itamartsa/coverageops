@@ -416,3 +416,291 @@ def generate_cross_section_docx(
     doc.save(buf)
     buf.seek(0)
     return buf.read()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Point-to-point link report (קישור נקודתי)
+# ══════════════════════════════════════════════════════════════════════════════
+
+EST_MARK = " (משוער)"
+
+
+def _fmt(v, spec: str = ".1f", unit: str = "", none: str = "—") -> str:
+    if v is None:
+        return none
+    try:
+        return f"{format(float(v), spec)}{unit}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def render_link_profile_png(data: dict, width: int = 1400, height: int = 560) -> bytes:
+    """
+    Simple terrain profile chart (Pillow): terrain fill, LOS line and the first
+    Fresnel-zone envelope (los_m ± fresnel_m), both endpoints marked.
+    Labels are ASCII only (no font shaping for Hebrew in Pillow's default font).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    prof = data.get("profile") or []
+    img  = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default(size=18)
+    except TypeError:                                  # Pillow < 10.1
+        font = ImageFont.load_default()
+    if len(prof) < 2:
+        draw.text((20, 20), "no profile data", fill=(0, 0, 0), font=font)
+        buf = io.BytesIO(); img.save(buf, format="PNG"); return buf.getvalue()
+
+    L, R, T, B = 90, 30, 30, 70
+    pw, ph = width - L - R, height - T - B
+    xs  = [float(p["dist_km"]) for p in prof]
+    los = [float(p["los_m"]) for p in prof]
+    fr  = [float(p.get("fresnel_m") or 0.0) for p in prof]
+    # unknown terrain → linear between known neighbours (endpoints always known)
+    ter_raw = [p.get("terrain_m") for p in prof]
+    known = [(i, float(v)) for i, v in enumerate(ter_raw) if v is not None]
+    ter: list = []
+    for i in range(len(prof)):
+        if ter_raw[i] is not None:
+            ter.append(float(ter_raw[i])); continue
+        lo = max((k for k in known if k[0] < i), default=None, key=lambda k: k[0])
+        hi = min((k for k in known if k[0] > i), default=None, key=lambda k: k[0])
+        if lo and hi:
+            t = (i - lo[0]) / (hi[0] - lo[0]); ter.append(lo[1] + t * (hi[1] - lo[1]))
+        else:
+            ter.append((lo or hi or (0, 0.0))[1])
+
+    x0, x1 = xs[0], xs[-1] if xs[-1] > xs[0] else xs[0] + 1e-3
+    lows  = ter + [l - f for l, f in zip(los, fr)]
+    highs = ter + [l + f for l, f in zip(los, fr)]
+    y_lo, y_hi = min(lows), max(highs)
+    pad = max((y_hi - y_lo) * 0.08, 5.0)
+    y_lo, y_hi = y_lo - pad, y_hi + pad
+
+    def X(d): return L + (d - x0) / (x1 - x0) * pw
+    def Y(h): return T + (y_hi - h) / (y_hi - y_lo) * ph
+
+    # grid + axes
+    for k in range(6):
+        h = y_lo + k * (y_hi - y_lo) / 5
+        y = Y(h)
+        draw.line([(L, y), (L + pw, y)], fill=(230, 230, 230))
+        draw.text((8, y - 10), f"{h:.0f} m", fill=(90, 90, 90), font=font)
+    for k in range(6):
+        d = x0 + k * (x1 - x0) / 5
+        x = X(d)
+        draw.line([(x, T), (x, T + ph)], fill=(235, 235, 235))
+        draw.text((min(x - 25, width - 85), T + ph + 8), f"{d:.2f} km", fill=(90, 90, 90), font=font)
+    draw.rectangle([L, T, L + pw, T + ph], outline=(120, 120, 120))
+
+    # terrain fill
+    poly = [(X(d), Y(h)) for d, h in zip(xs, ter)] + [(X(xs[-1]), T + ph), (X(xs[0]), T + ph)]
+    draw.polygon(poly, fill=(196, 170, 120), outline=(140, 110, 70))
+    # Fresnel envelope + LOS
+    upper = [(X(d), Y(l + f)) for d, l, f in zip(xs, los, fr)]
+    lower = [(X(d), Y(l - f)) for d, l, f in zip(xs, los, fr)]
+    draw.line(upper, fill=(26, 86, 219), width=2)
+    draw.line(lower, fill=(26, 86, 219), width=2)
+    los_col = (0, 160, 80) if data.get("is_los") else (220, 40, 60)
+    draw.line([(X(d), Y(l)) for d, l in zip(xs, los)], fill=los_col, width=3)
+    # endpoints (antennas)
+    for d, g, l in ((xs[0], ter[0], los[0]), (xs[-1], ter[-1], los[-1])):
+        draw.line([(X(d), Y(g)), (X(d), Y(l))], fill=(15, 41, 77), width=4)
+        draw.ellipse([X(d) - 6, Y(l) - 6, X(d) + 6, Y(l) + 6], fill=(15, 41, 77))
+    ob = data.get("worst_obstacle")
+    if ob:
+        ox, oy = X(float(ob["dist_km"])), Y(float(ob["terrain_m"]))
+        draw.ellipse([ox - 7, oy - 7, ox + 7, oy + 7], outline=(220, 40, 60), width=3)
+    draw.text((L + 10, T + 6), "TX", fill=(15, 41, 77), font=font)
+    draw.text((L + pw - 40, T + 6), "RX", fill=(15, 41, 77), font=font)
+    draw.text((L + pw / 2 - 160, height - 28),
+              "terrain | LOS (green=clear, red=blocked) | 1st Fresnel zone (blue)",
+              fill=(60, 60, 60), font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def generate_link_docx(data: dict) -> bytes:
+    """Word report for a stored point-to-point link response (POST /api/link/)."""
+    tx   = data.get("transmitter") or {}
+    rx   = data.get("receiver") or {}
+    est  = set(tx.get("estimated_fields") or [])
+    mode = data.get("mode", "DTM")
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width, section.page_height = Cm(21), Cm(29.7)
+    section.left_margin = section.right_margin = Cm(2)
+    section.top_margin = section.bottom_margin = Cm(2)
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    hdr = doc.add_table(rows=1, cols=1)
+    _shade_cell(hdr.rows[0].cells[0], "0F294D")
+    tp = hdr.rows[0].cells[0].paragraphs[0]
+    tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _rtl_para(tp)
+    r1 = tp.add_run("דוח קישור נקודתי\n")
+    r1.bold, r1.font.size, r1.font.color.rgb = True, Pt(22), WHITE
+    r2 = tp.add_run("תקציב קישור משדר ← נקודת קליטה  |  CoverageOps")
+    r2.font.size, r2.font.color.rgb = Pt(11), RGBColor(0xA0, 0xC4, 0xFF)
+    doc.add_paragraph()
+
+    meta = doc.add_paragraph()
+    _rtl_para(meta)
+    meta.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    mr = meta.add_run(
+        f"תאריך הפקה: {datetime.now().strftime('%d/%m/%Y  %H:%M')}     |     "
+        f"תאריך ניתוח: {str(data.get('created_at') or '')[:16].replace('T', ' ')}     |     "
+        f"מזהה: {data.get('id', '—')}     |     מסמך פנימי")
+    mr.font.size, mr.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+    doc.add_paragraph()
+
+    def _e(field: str, text: str) -> str:
+        return text + (EST_MARK if field in est else "")
+
+    # ── 1. Transmitter ───────────────────────────────────────────────────────
+    _add_heading(doc, "1. משדר")
+    kind_he = "אתר שלי" if tx.get("kind") == "site" else "אתר סלולר אזרחי"
+    tx_rows = [
+        ("שם",              tx.get("name") or "—"),
+        ("סוג",             kind_he),
+        ("מיקום",           f"{_fmt(tx.get('lat'), '.5f')}°N,  {_fmt(tx.get('lon'), '.5f')}°E"),
+        ("גובה קרקע",       f"{_fmt(data.get('tx_ground_asl'), '.0f')} מ' מעל פני הים"),
+        ("גובה אנטנה",      _e("ant_height_m", f"{_fmt(tx.get('ant_height_m'), 'g')} מ' מעל הקרקע")),
+        ("תדר",             _e("frequency_mhz", f"{tx.get('frequency_mhz', '—')} MHz")),
+        ("הספק שידור (EIRP)", _e("tx_power_dbm", f"{_fmt(tx.get('tx_power_dbm'), 'g')} dBm")),
+        ("מקור פרמטרים",    "משוער" if tx.get("params_source") == "estimated" else "ידני"),
+    ]
+    if tx.get("operator_he"):
+        tx_rows.insert(2, ("מפעיל", tx["operator_he"]))
+    _add_kv_table(doc, tx_rows)
+
+    # ── 2. Receiver ──────────────────────────────────────────────────────────
+    _add_heading(doc, "2. מקלט (נקודת קליטה)")
+    _add_kv_table(doc, [
+        ("שם",               rx.get("name") or "—"),
+        ("פרופיל מכשיר",     rx.get("profile_name") or "ברירת מחדל מובנית"),
+        ("מיקום",            f"{_fmt(rx.get('lat'), '.5f')}°N,  {_fmt(rx.get('lon'), '.5f')}°E"),
+        ("גובה קרקע",        f"{_fmt(data.get('rx_ground_asl'), '.0f')} מ' מעל פני הים"),
+        ("גובה מכשיר",       f"{_fmt(rx.get('height_agl'), 'g')} מ' מעל הקרקע"),
+        ("רגישות",           f"{_fmt(rx.get('sensitivity_dbm'), 'g')} dBm"),
+        ("הגבר אנטנה",       f"{_fmt(rx.get('antenna_gain_dbi'), 'g')} dBi"),
+    ])
+
+    # ── 3. Results ───────────────────────────────────────────────────────────
+    _add_heading(doc, "3. תוצאות")
+    level = data.get("level", "none")
+    margin = data.get("margin_db")
+    verdict_fill = ("00B464" if margin is not None and margin >= 10
+                    else "FFA500" if margin is not None and margin >= 0 else "CC0000")
+    verdict = ("קשר תקין" if verdict_fill == "00B464"
+               else "קשר גבולי" if verdict_fill == "FFA500" else "אין קשר")
+    _add_stat_box(doc, f"RSSI {_fmt(data.get('rssi_dbm'), '.1f')} dBm  |  מרווח {_fmt(margin, '+.1f')} dB",
+                  verdict, verdict_fill, text_white=verdict_fill != "FFA500")
+
+    headers = ["מרחק (ק\"מ)", "אזימוט (°)", "FSPL (dB)", "עקיפה (dB)",
+               "RSSI (dBm)", "מרווח (dB)", "קו ראייה", "פרנל (%)"]
+    values  = [_fmt(data.get("distance_km"), ".2f"), _fmt(data.get("bearing_deg"), ".1f"),
+               _fmt(data.get("fspl_db"), ".1f"), _fmt(data.get("diffraction_db"), ".1f"),
+               _fmt(data.get("rssi_dbm"), ".1f"), _fmt(margin, "+.1f"),
+               "כן" if data.get("is_los") else "לא",
+               _fmt(data.get("fresnel_clearance_pct"), ".0f")]
+    tbl = doc.add_table(rows=2, cols=len(headers))
+    tbl.style = "Table Grid"
+    _rtl_table(tbl)
+    for i, (h, v) in enumerate(zip(headers, values)):
+        _shade_cell(tbl.rows[0].cells[i], "0F294D")
+        _cell_text(tbl.rows[0].cells[i], h, bold=True, size_pt=9, color=WHITE,
+                   align=WD_ALIGN_PARAGRAPH.CENTER)
+        _cell_text(tbl.rows[1].cells[i], v, size_pt=10, align=WD_ALIGN_PARAGRAPH.CENTER)
+    doc.add_paragraph()
+
+    extra = [
+        ("רמת אות",           LEVEL_HE.get(level, level)),
+        ("מצב חישוב",          MODE_HE.get(mode, mode)),
+        ("הפסד תכסית (DSM)",   f"{_fmt(data.get('clutter_db'), '.1f')} dB"),
+        ("תוספת גובה אנטנה",   f"{_fmt(data.get('height_gain_db'), '.1f')} dB"),
+        ("הגבר מקלט",          f"{_fmt(data.get('rx_gain_db'), '.1f')} dB"),
+        ("גובה מכשיר נדרש",    ("כבר מספיק" if data.get("required_rx_height_m") == 0
+                               else f"{_fmt(data.get('required_rx_height_m'), 'g')} מ'"
+                               if data.get("required_rx_height_m") is not None else "לא ניתן להשגה")),
+    ]
+    _add_kv_table(doc, extra)
+
+    # ── 4. Worst obstacle ────────────────────────────────────────────────────
+    _add_heading(doc, "4. מכשול עיקרי")
+    ob = data.get("worst_obstacle")
+    if ob:
+        _add_kv_table(doc, [
+            ("מרחק מהמשדר",   f"{_fmt(ob.get('dist_km'), '.2f')} ק\"מ"),
+            ("מיקום",          f"{_fmt(ob.get('lat'), '.5f')}°N,  {_fmt(ob.get('lon'), '.5f')}°E"),
+            ("גובה קרקע",      f"{_fmt(ob.get('terrain_m'), '.0f')} מ'"),
+            ("גובה קו הראייה", f"{_fmt(ob.get('los_m'), '.0f')} מ'"),
+            ("פרמטר עקיפה ν",  _fmt(ob.get("nu"), ".2f")),
+        ])
+    else:
+        p = doc.add_paragraph("לא זוהה מכשול טופוגרפי התורם להפסד עקיפה.")
+        _rtl_para(p)
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    # ── 5. Profile chart ─────────────────────────────────────────────────────
+    _add_heading(doc, "5. חתך טופוגרפי")
+    try:
+        png = render_link_profile_png(data)
+        pic_para = doc.add_paragraph()
+        pic_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pic_para.add_run().add_picture(io.BytesIO(png), width=Cm(17))
+    except Exception:                                   # pragma: no cover
+        p = doc.add_paragraph("לא ניתן היה לשרטט את החתך.")
+        _rtl_para(p)
+    doc.add_paragraph()
+
+    # ── 6. Recommendations ───────────────────────────────────────────────────
+    _add_heading(doc, "6. המלצות")
+    for i, rec in enumerate(data.get("recommendations") or [], 1):
+        p = doc.add_paragraph()
+        _rtl_para(p)
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        rn = p.add_run(f"{i}. ")
+        rn.bold, rn.font.color.rgb, rn.font.size = True, ACCENT_BLUE, Pt(11)
+        p.add_run(rec).font.size = Pt(10)
+    warnings = data.get("warnings") or []
+    if warnings:
+        _add_heading(doc, "אזהרות", level=2)
+        for w in warnings:
+            p = doc.add_paragraph()
+            _rtl_para(p)
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            rw = p.add_run("⚠ " + w)
+            rw.font.size, rw.font.color.rgb = Pt(10), RGBColor(0xB4, 0x53, 0x09)
+    doc.add_paragraph()
+
+    # ── Data quality ─────────────────────────────────────────────────────────
+    src = data.get("dem_source")
+    if src == "terrarium" or (src and src.startswith("terrarium")):
+        dq = (f"נתוני גבהים: Terrarium – {_fmt(data.get('dem_valid_pct'), '.1f')}% תקין באזור, "
+              f"{_fmt(data.get('profile_valid_pct'), '.0f')}% לאורך התוואי")
+        if data.get("dem_m_per_px"):
+            dq += f", רזולוציה ~{_fmt(data.get('dem_m_per_px'), '.0f')} מ'/פיקסל"
+    else:
+        dq = "נתוני גבהים: ללא נתוני טופוגרפיה – לא חושבו חסימות (תוצאה אופטימית)"
+    dq += ".  מודל: FSPL + ITU-R P.526 Deygout (k=4/3)"
+    p = doc.add_paragraph()
+    _rtl_para(p)
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    rq = p.add_run(dq)
+    rq.font.size, rq.font.color.rgb = Pt(9), RGBColor(0x6B, 0x72, 0x80)
+
+    footer = doc.add_table(rows=1, cols=1)
+    _shade_cell(footer.rows[0].cells[0], "0F294D")
+    _cell_text(footer.rows[0].cells[0],
+               f"הופק על ידי CoverageOps  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  מסמך פנימי",
+               size_pt=9, align=WD_ALIGN_PARAGRAPH.CENTER, color=RGBColor(0xA0, 0xC4, 0xFF))
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()

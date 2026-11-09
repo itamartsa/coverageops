@@ -11,8 +11,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.migrations import run_startup_migrations
-from app.api import auth, sites, coverage, users, cell_sites
+from app.api import auth, sites, coverage, users, cell_sites, device_profiles, link
 from app.models import cell_site  # noqa: F401  (register cell_sites tables)
+from app.models import link_result  # noqa: F401  (register link_results table)
+from app.models import device_profile  # noqa: F401  (register device_profiles table)
+from app.models.device_profile import seed_device_profiles
 from app.core.database import SessionLocal
 from app.services.cell_sites_import import ensure_loaded
 
@@ -20,7 +23,19 @@ def init_db() -> None:
     """Create tables, then add columns introduced after first deployment."""
     Base.metadata.create_all(bind=engine)
     run_startup_migrations(engine)
+    load_device_profiles()
     load_cell_sites()
+
+
+def load_device_profiles() -> None:
+    """Seed the built-in receiver profiles (idempotent, keeps admin edits)."""
+    db = SessionLocal()
+    try:
+        seed_device_profiles(db)
+    except Exception as e:
+        print(f"⚠️  device_profiles seed skipped: {e}")
+    finally:
+        db.close()
 
 
 def load_cell_sites() -> None:
@@ -68,6 +83,8 @@ app.include_router(users.router,    prefix="/api/users",    tags=["users"])
 app.include_router(sites.router,    prefix="/api/sites",    tags=["sites"])
 app.include_router(coverage.router, prefix="/api/coverage", tags=["coverage"])
 app.include_router(cell_sites.router, prefix="/api/cell-sites", tags=["cell-sites"])
+app.include_router(device_profiles.router, prefix="/api/device-profiles", tags=["device-profiles"])
+app.include_router(link.router,     prefix="/api/link",     tags=["link"])
 
 
 @app.get("/api/health")

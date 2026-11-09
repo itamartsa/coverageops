@@ -56,3 +56,9 @@
 .actionBtn:hover { border-color: var(--accent); color: var(--accent); }
 .danger { color: var(--danger); border-color: var(--danger); }
 .danger:hover { background: rgba(255,59,92,0.08); }
+
+.estBadge {
+  display: inline-block; margin-bottom: 4px;
+  font-size: 10px; font-weight: 600; color: var(--warn);
+  border: 1px dashed var(--warn); padding: 0 6px; cursor: help;
+}

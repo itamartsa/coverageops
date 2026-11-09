@@ -59,11 +59,20 @@ class SiteOut(BaseModel):
     notes:        Optional[str]
     owner_id:     int
     created_at:   datetime
+    # Provenance — set when the site was promoted from a civil cell site
+    cell_site_id:  Optional[int] = None
+    params_source: str = "manual"          # manual | estimated
+    source_note:   Optional[str] = None
 
     @field_validator("ant_height_is_default", mode="before")
     @classmethod
     def _null_is_false(cls, v):
         return bool(v)            # legacy rows store NULL
+
+    @field_validator("params_source", mode="before")
+    @classmethod
+    def _null_is_manual(cls, v):
+        return v or "manual"      # legacy rows store NULL
 
     class Config:
         from_attributes = True
@@ -135,6 +144,16 @@ def update_site(
     new_lon = updates.get("lon", site.lon)
     if "lat" in updates or "lon" in updates:
         updates["elevation_m"] = _site_elevation(new_lat, new_lon)
+
+    # A promoted site whose estimated RF/height parameters are edited by hand
+    # is no longer "estimated" — record it in the provenance note.
+    if (site.params_source == "estimated"
+            and any(f in updates for f in ("ant_height", "tx_power", "frequency"))):
+        updates["params_source"] = "manual"
+        stamp = f"עודכן ידנית ב-{datetime.utcnow():%Y-%m-%d}"
+        note = (site.source_note or "").strip()
+        keep = 256 - len(stamp) - 1                       # column is String(256)
+        updates["source_note"] = f"{note[:keep]} {stamp}" if note else stamp
 
     for field, value in updates.items():
         setattr(site, field, value)

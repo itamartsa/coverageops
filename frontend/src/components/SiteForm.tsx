@@ -114,6 +114,16 @@ export default function SiteForm() {
         💡 לחץ "בחר מהמפה" לקליטת קואורדינטות בלחיצה על המפה
       </div>
 
+      {editingSite && (editingSite.params_source === "estimated" || editingSite.source_note) && (
+        <div className={styles.sourceNote}>
+          <b>{editingSite.params_source === "estimated" ? "⚠ אתר עם פרמטרים משוערים" : "ℹ מקור האתר"}</b>
+          {editingSite.source_note && <div>{editingSite.source_note}</div>}
+          {editingSite.params_source === "estimated" && (
+            <div className={styles.sourceHint}>עדכון הערכים כאן משפיע על אתר הניתוח בלבד (לא על המאגר הסלולרי).</div>
+          )}
+        </div>
+      )}
+
       {/* Name */}
       <div className={styles.group}>
         <label className={styles.label}>שם האתר</label>
@@ -172,6 +182,9 @@ export default function SiteForm() {
           {FREQUENCIES.map(f => (
             <option key={f} value={f}>{FREQ_LABELS[f]}</option>
           ))}
+          {!FREQUENCIES.includes(form.frequency) && Number.isFinite(form.frequency) && (
+            <option value={form.frequency}>{form.frequency} MHz (מותאם)</option>
+          )}
         </select>
       </div>
 

@@ -3,7 +3,9 @@
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Site, CoverageResult, CrossSectionResult } from "../services/api";
+import type {
+  Site, CoverageResult, CrossSectionResult, LinkResult, BestServersResult, TransmitterKind,
+} from "../services/api";
 
 interface BBox {
   sw_lat: number; sw_lon: number;
@@ -42,6 +44,33 @@ const SYSTEM_LAYERS: MapLayer[] = [
   { id: "cellsites", name: "אתרי סלולר – מאגר ממשלתי", type: "cellular", visible: false },
   { id: "dem",      name: "גבהים (DEM)",          type: "dem",      visible: false },
 ];
+
+// ── Point-to-point link ───────────────────────────────────────────────────────
+
+export type DrawMode = "rect" | "square" | "point" | "waypoint" | "linkpoint";
+export type SidebarTab = "sites" | "new" | "analysis" | "history" | "crosssection" | "layers" | "link";
+export type LinkSubMode = "link" | "best";
+
+/** Chosen transmitter for the link tab. `id: null` = the kind is chosen but no site picked yet. */
+export interface LinkTransmitterSel {
+  kind: TransmitterKind;
+  id: number | null;
+  /** cell_site only: band to use (MHz); omitted → the server's estimate */
+  frequency_mhz?: number | null;
+}
+
+/** Receiver options kept across tab switches (point itself is `linkReceiver`). */
+export interface LinkReceiverOpts {
+  device_profile_id: number | null;
+  height_agl: string;        // raw input strings; "" = use the profile value
+  sensitivity_dbm: string;
+  antenna_gain_dbi: string;
+  name: string;
+}
+
+const EMPTY_RX_OPTS: LinkReceiverOpts = {
+  device_profile_id: null, height_agl: "", sensitivity_dbm: "", antenna_gain_dbi: "", name: "",
+};
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
@@ -82,13 +111,13 @@ interface AppState {
   setCrossSectionResult: (r: CrossSectionResult | null) => void;
 
   // UI
-  drawMode: "rect" | "square" | "point" | "waypoint" | null;
-  setDrawMode: (m: "rect" | "square" | "point" | "waypoint" | null) => void;
+  drawMode: DrawMode | null;
+  setDrawMode: (m: DrawMode | null) => void;
   pickedLocation: { lat: number; lon: number } | null;
   setPickedLocation: (loc: { lat: number; lon: number } | null) => void;
   isCalculating: boolean;
   setIsCalculating: (v: boolean) => void;
-  activeTab: "sites" | "new" | "analysis" | "history" | "crosssection" | "layers";
+  activeTab: SidebarTab;
   setActiveTab: (t: AppState["activeTab"]) => void;
 
   // ── Layer management ────────────────────────────────────────────────────────
@@ -105,6 +134,26 @@ interface AppState {
   setCellSiteFilter: (f: Partial<AppState["cellSiteFilter"]>) => void;
   cellSitesVersion: number;          // bump to force re-fetch after a sync
   bumpCellSitesVersion: () => void;
+
+  // ── Point-to-point link tab ─────────────────────────────────────────────────
+  linkSubMode: LinkSubMode;
+  setLinkSubMode: (m: LinkSubMode) => void;
+  linkTransmitter: LinkTransmitterSel | null;
+  setLinkTransmitter: (t: LinkTransmitterSel | null) => void;
+  linkReceiver: { lat: number; lon: number } | null;
+  setLinkReceiver: (p: { lat: number; lon: number } | null) => void;
+  linkReceiverOpts: LinkReceiverOpts;
+  setLinkReceiverOpts: (o: Partial<LinkReceiverOpts>) => void;
+  linkResult: LinkResult | null;
+  setLinkResult: (r: LinkResult | null) => void;
+  bestServersResult: BestServersResult | null;
+  setBestServersResult: (r: BestServersResult | null) => void;
+  /** Cell-site id of the best-servers row highlighted on the map */
+  highlightedServerId: number | null;
+  setHighlightedServerId: (id: number | null) => void;
+  /** While true, the next click on a cell-site marker picks it as the link transmitter */
+  linkPickTransmitter: boolean;
+  setLinkPickTransmitter: (v: boolean) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -122,6 +171,8 @@ export const useStore = create<AppState>()(
         set({
           token: null, user: null, sites: [], activeSiteId: null,
           bbox: null, coverageResults: [], selectedSiteIds: [],
+          linkTransmitter: null, linkReceiver: null, linkResult: null,
+          bestServersResult: null, highlightedServerId: null, linkPickTransmitter: false,
         });
       },
 
@@ -195,6 +246,24 @@ export const useStore = create<AppState>()(
       setCellSiteFilter: (f) => set((s) => ({ cellSiteFilter: { ...s.cellSiteFilter, ...f } })),
       cellSitesVersion: 0,
       bumpCellSitesVersion: () => set((s) => ({ cellSitesVersion: s.cellSitesVersion + 1 })),
+
+      // ── Link ────────────────────────────────────────────────────────────────
+      linkSubMode: "link",
+      setLinkSubMode: (m) => set({ linkSubMode: m }),
+      linkTransmitter: null,
+      setLinkTransmitter: (t) => set({ linkTransmitter: t }),
+      linkReceiver: null,
+      setLinkReceiver: (p) => set({ linkReceiver: p }),
+      linkReceiverOpts: EMPTY_RX_OPTS,
+      setLinkReceiverOpts: (o) => set((s) => ({ linkReceiverOpts: { ...s.linkReceiverOpts, ...o } })),
+      linkResult: null,
+      setLinkResult: (r) => set({ linkResult: r }),
+      bestServersResult: null,
+      setBestServersResult: (r) => set({ bestServersResult: r, highlightedServerId: null }),
+      highlightedServerId: null,
+      setHighlightedServerId: (id) => set({ highlightedServerId: id }),
+      linkPickTransmitter: false,
+      setLinkPickTransmitter: (v) => set({ linkPickTransmitter: v }),
 
       renameMapLayer: (id, name) =>
         set((s) => ({

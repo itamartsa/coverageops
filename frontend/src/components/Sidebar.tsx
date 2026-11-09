@@ -5,6 +5,7 @@ import AnalysisPanel from "./AnalysisPanel";
 import HistoryPanel from "./HistoryPanel";
 import CrossSectionPanel from "./CrossSectionPanel";
 import LayersPanel from "./LayersPanel";
+import LinkPanel from "./LinkPanel";
 import styles from "./Sidebar.module.css";
 
 const TABS = [
@@ -12,6 +13,7 @@ const TABS = [
   { key: "new",          label: "הקמת אתר" },
   { key: "analysis",     label: "ניתוח"    },
   { key: "crosssection", label: "חתך רדיו" },
+  { key: "link",         label: "🎯 קישור נקודתי" },
   { key: "layers",       label: "🗂 שכבות"  },
   { key: "history",      label: "היסטוריה" },
 ] as const;
@@ -38,6 +40,7 @@ export default function Sidebar() {
         {activeTab === "new"          && <SiteForm />}
         {activeTab === "analysis"     && <AnalysisPanel />}
         {activeTab === "crosssection" && <CrossSectionPanel />}
+        {activeTab === "link"         && <LinkPanel />}
         {activeTab === "layers"       && <LayersPanel />}
         {activeTab === "history"      && <HistoryPanel />}
       </div>

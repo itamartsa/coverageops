@@ -319,6 +319,94 @@ Frontend: עריכת גובה בחלון האתר — `cellSitePopupHtml(detail,
 מחבר click/keydown מואצל לכל אלמנט popup (פעם אחת), קורא ל-`cellSitesApi.setHeight/resetHeight`, מעדכן את השורה
 בזיכרון (`cellSitesDataRef`) ואת סגנון הסמן (טבעת כהה לגובה ידני), ומרנדר מחדש את החלון.
 
+### Point-to-point link — `/api/link`
+
+נתב נפרד (`app/api/link.py`, נרשם ב-`main.py` תחת `/api/link`) — לא משנה את `/api/coverage`.
+הפיזיקה ב-`services/link_engine.py` (`calculate_link`, `best_servers`, `link_bbox`).
+
+| Method | Path | Auth | תיאור |
+|--------|------|------|-------|
+| POST   | /               | ADMIN/OPERATOR | תקציב קישור משדר → נקודה; נשמר ב-`link_results` כאשר `save=true` (ברירת מחדל) |
+| POST   | /best-servers   | ADMIN/OPERATOR | דירוג אתרי סלולר אזרחיים סביב נקודה ("מי משרת"); לא נשמר |
+| GET    | /               | JWT            | 100 הקישורים האחרונים (כל המשתמשים), שדות סיכום בלבד |
+| GET    | /{id}           | JWT            | התגובה המלאה השמורה (זהה ל-POST /, כולל `profile`) |
+| GET    | /{id}/docx      | JWT            | דוח Word (שם קובץ ASCII + `filename*` RFC 5987) |
+| DELETE | /{id}           | ADMIN/OPERATOR | מחיקה — הבעלים או ADMIN (אחרת 403) |
+
+**`POST /` — גוף:**
+```json
+{ "transmitter": {"kind": "site" | "cell_site", "id": 1, "frequency_mhz": 900},
+  "receiver": {"lat": 32.0, "lon": 35.0, "device_profile_id": 2, "height_agl": 1.5,
+               "sensitivity_dbm": -105, "antenna_gain_dbi": 0, "name": "נקודה"},
+  "mode": "DTM" | "DSM", "save": true }
+```
+- `frequency_mhz` אופציונלי (100–6000, אחרת 422).
+- **משדר `site`:** פרמטרי האתר; גובה קרקע = `sites.elevation_m`, אחרת דגימה מה-DEM, אחרת 0 מ' + אזהרה.
+  `estimated_fields` = כל שלושת השדות אם `params_source="estimated"`, אחרת `ant_height_m` אם `ant_height_is_default`.
+- **משדר `cell_site`:** `ant_height = ant_height_m or 15`, `tx_power = tx_power_dbm or 40`,
+  תדר = מפורש → ערך ידני (`rf_source="manual"`) → `default_band(technologies)` (הפס הנמוך).
+  גובה קרקע תמיד מדגימת DEM (בילינארי, מרכזי תאים), אחרת 0 מ' + אזהרה. `max_radius = 60`.
+  כל שדה שאינו ידני נכנס ל-`estimated_fields` (`ant_height_m`, `tx_power_dbm`, `frequency_mhz`).
+- **מקלט:** פרופיל מפורש (404 אם לא קיים) → פרופיל ברירת המחדל (`is_default`) → ערכים מובנים
+  (1.5 מ', −105 dBm, 0 dBi); ערכים מפורשים גוברים על הפרופיל. `rx_threshold` של המשדר = רגישות המקלט.
+- מרחק > 150 ק"מ → 400. DEM: קריאה אחת ל-`link_bbox(..., 0.01°)` ברזולוציה אדפטיבית לכל ציר:
+  `clamp(round(side_m / max(TARGET_CELL_M, dem_m_per_px)), 20, 500)`. `DemAreaTooLarge` → 413.
+  DEM חסר → `dem_source="none"` + אזהרה.
+
+**תגובה:** כל שדות `LinkResult` (dataclass) ועוד:
+```
+distance_km, bearing_deg, tx_h_asl, rx_h_asl, tx_ground_asl, rx_ground_asl,
+fspl_db, diffraction_db, clutter_db, height_gain_db, rx_gain_db,
+rssi_dbm, margin_db, level, is_los, fresnel_clearance_pct,
+worst_obstacle: {dist_km, lat, lon, terrain_m, los_m, nu} | null,
+profile: [{dist_km, lat, lon, terrain_m|null, los_m, fresnel_m}]   (81 נקודות),
+required_rx_height_m: float|null, dem_source, dem_valid_pct, mode,
+recommendations: [str], duration_sec, rx_ground_fallback, profile_valid_pct,
+id: int|null, created_at: ISO-UTC "…Z", dem_m_per_px: float|null,
+transmitter: {kind, id, name, lat, lon, ant_height_m, frequency_mhz, tx_power_dbm,
+              params_source: "manual"|"estimated", estimated_fields: [str], ground_asl,
+              (cell_site בלבד:) operator, operator_he, site_type, site_type_he, technologies, bands},
+receiver: {lat, lon, height_agl, sensitivity_dbm, antenna_gain_dbi, name,
+           profile_id, profile_key, profile_name, overridden: [str], ground_asl},
+warnings: [str]   (עברית: פרמטרים משוערים, ללא DEM / DEM חלקי, גובה קרקע משדר לא ידוע, גובה קרקע מקלט לא ידוע)
+```
+שרטוט החתך: `los_m ± fresnel_m` מעל `terrain_m` (גבהים מעל פני הים, על כדור ארץ שטוח — בליטת
+כדור הארץ כבר מוחסרת מ-`los_m`).
+
+**`POST /best-servers` — גוף:**
+`{receiver: {...כנ"ל}, mode, radius_km: 1–30 (10), operator?: "PHI"|"PELEPHONE"|"CELLCOM",
+statuses: ["active"] (ברירת מחדל; אפשר גם "construction"), top_n: 1–10 (5), band_policy: "lowest"|"highest"}`.
+סינון: ריבוע lat/lon סביב הנקודה → haversine ≤ radius, ללא `site_type="small_indoor"`, עד 400 הקרובים.
+קריאת DEM אחת לריבוע (נקודה ± רדיוס + 0.01°). לכל מועמד: תדר ידני אם `rf_source="manual"`, אחרת לפי
+`band_policy` מתוך `bands_for(technologies)` (900 אם אין), `tx_power_dbm or 40`, `ant_height_m or 15`,
+גובה קרקע מה-DEM (אחרת גובה הקרקע במקלט). `best_servers(..., profile_points=40)` — ~0.3 ש' ל-100 מועמדים.
+
+תגובה:
+```
+{ receiver: {...כנ"ל, ground_asl}, mode, radius_km, band_policy, candidates_evaluated,
+  dem_source: "terrarium"|"none", dem_valid_pct,
+  results: [{ rank,
+     cell_site: {id, operator, operator_he, site_type, site_type_he, city, address, lat, lon,
+                 ant_height_m, height_source, frequency_mhz, tx_power_dbm, rf_source, bands,
+                 status, site_code},
+     link: {distance_km, bearing_deg, rssi_dbm, margin_db, level, is_los, diffraction_db,
+            fresnel_clearance_pct} }],
+  warnings: [str] }
+```
+
+**`GET /` — שורת סיכום:** `id, owner_id, tx_kind, tx_id, tx_name, tx_lat, tx_lon, tx_frequency,
+tx_power_dbm, tx_ant_height_m, tx_params_source, rx_lat, rx_lon, rx_height_agl, rx_sensitivity_dbm,
+rx_gain_dbi, rx_profile_key, rx_name, mode, distance_km, bearing_deg, rssi_dbm, margin_db, level, is_los,
+diffraction_db, fspl_db, fresnel_clearance_pct, required_rx_height_m, dem_source, dem_valid_pct, created_at`.
+
+**טבלה `link_results`** (`app/models/link_result.py`): כל עמודות הסיכום לעיל + `result_json` (Text, deferred —
+התגובה המלאה כולל הפרופיל). נוצרת ע"י `create_all`; אין עמודות להוספה ב-`migrations.py`.
+
+**דוח Word** (`report_generator.generate_link_docx(stored_response)`): כותרת, טבלאות משדר/מקלט (ערכים
+משוערים מסומנים "(משוער)"), טבלת תוצאות (מרחק, אזימוט, FSPL, עקיפה, RSSI, מרווח, LOS, פרנל %),
+מכשול עיקרי, תרשים חתך PNG (Pillow — `render_link_profile_png`: טרן, קו ראייה ירוק/אדום, מעטפת פרנל כחולה),
+המלצות, אזהרות ושורת איכות נתונים.
+
 ## מנוע הפצה (coverage_engine.py)
 
 ### מודל הפצה
@@ -457,6 +545,8 @@ docker compose exec backend pytest tests/ -v
 - API מקצה לקצה (`test_api_coverage.py`): SQLite בזיכרון + DEM סינתטי —
   שמירת רסטר, רזולוציה אדפטיבית, PNG/GeoJSON/דוח, אתר מחוץ ל-bbox (רכס בין האתר לשטח
   מוריד RSSI), DEM חסר → אזהרה, שורות legacy, מיגרציות
+- קישור נקודתי (`test_api_link.py`): משדר מאתר/אתר סלולר, פרופיל מקלט ודריסות, הרשאות, 400/413,
+  שמירה/רשימה/מחיקה, דוח Word, "מי משרת" (דירוג, סינון מפעיל/רדיוס/small_indoor, ביצועים < 5 ש')
 
 ---
 

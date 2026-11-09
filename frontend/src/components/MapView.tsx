@@ -3,10 +3,13 @@ import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import api, { apiErrorText, apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
-import type { CellSiteDetail, CellSiteRow } from "../services/api";
+import type { BestServersResult, CellSiteDetail, CellSiteRow } from "../services/api";
 import {
-  CELL_OPERATORS, canEditCellSiteHeight, cellSiteHeightFormHtml, cellSitePopupHtml, isManualHeight,
+  CELL_OPERATORS, canEditCellSiteHeight, canPromoteCellSite, cellSiteBands, cellSiteHeightFormHtml,
+  cellSitePopupHtml, cellSitePromoteFormHtml, cellSiteRfFormHtml, isManualHeight,
 } from "../lib/cellSites";
+import { levelColor, levelHe, fmtDb, fmtKm } from "../lib/link";
+import { fmtDbm } from "../services/coverageFormat";
 import styles from "./MapView.module.css";
 
 /** Canvas style of a civil cell-site marker. Manual (user-entered) heights get a dark, thicker ring. */
@@ -49,6 +52,10 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+const escHtml = (v: unknown) =>
+  String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+
 function fsplDb(dist_km: number, freq_mhz: number): number {
   if (dist_km <= 0) return 0;
   return 20*Math.log10(dist_km*1000) + 20*Math.log10(freq_mhz*1e6) - 147.55;
@@ -80,6 +87,10 @@ export default function MapView() {
   const cellCanvasRef    = useRef<L.Canvas | null>(null);
   const cellMarkersRef   = useRef<Map<number, L.CircleMarker>>(new Map());
   const cellDetailsRef   = useRef<Map<number, CellSiteDetail>>(new Map());
+  // Point-to-point link
+  const linkRxMarkerRef  = useRef<L.Marker | null>(null);
+  const linkLayerRef     = useRef<L.LayerGroup | null>(null);
+  const bestLayerRef     = useRef<L.LayerGroup | null>(null);
 
   const {
     sites, drawMode, setDrawMode, setBbox, bbox,
@@ -88,6 +99,8 @@ export default function MapView() {
     crossSectionResult,
     activeBaseMapId, mapLayers,
     cellSiteFilter, cellSitesVersion,
+    linkReceiver, linkResult, bestServersResult, highlightedServerId, linkSubMode,
+    linkPickTransmitter, setLinkPickTransmitter,
   } = useStore();
 
   // ── Init map ────────────────────────────────────────────────────────────────
@@ -189,6 +202,13 @@ export default function MapView() {
         useStore.getState().setPickedLocation({ lat: e.latlng.lat, lon: e.latlng.lng });
         useStore.getState().setDrawMode(null);
         notify("✅ מיקום נקלט בהצלחה");
+        return;
+      }
+
+      if (mode === "linkpoint") {
+        useStore.getState().setLinkReceiver({ lat: e.latlng.lat, lon: e.latlng.lng });
+        useStore.getState().setDrawMode(null);
+        notify("📍 מיקום המקלט נקלט — ניתן לגרור את הסמן לכוונון");
         return;
       }
 
@@ -366,10 +386,23 @@ export default function MapView() {
             try {
               const d = await cellSitesApi.get(s.id);
               cellDetailsRef.current.set(s.id, d);
-              e.popup.setContent(cellSitePopupHtml(d, canEditCellSiteHeight(useStore.getState().user?.role)));
+              const role = useStore.getState().user?.role;
+              e.popup.setContent(cellSitePopupHtml(d, canEditCellSiteHeight(role), canPromoteCellSite(role)));
             } catch {
               e.popup.setContent("⚠ שגיאה בטעינת פרטי האתר");
             }
+          });
+          // Link tab "בחר במפה": the next click on a marker picks it as the transmitter
+          m.on("click", () => {
+            const st = useStore.getState();
+            if (!st.linkPickTransmitter) return;
+            setTimeout(() => m.closePopup(), 0);
+            // No band sent unless the user picks one in the panel → backend default/estimate applies
+            st.setLinkTransmitter({ kind: "cell_site", id: s.id, frequency_mhz: null });
+            st.setLinkPickTransmitter(false);
+            st.setLinkSubMode("link");
+            if (st.activeTab !== "link") st.setActiveTab("link");
+            notify("🎯 אתר סלולרי נבחר כמשדר");
           });
           m.addTo(group);
           cellMarkersRef.current.set(s.id, m);
@@ -386,13 +419,17 @@ export default function MapView() {
     return () => { cancelled = true; };
   }, [cellSitesVisible, cellSiteFilter, cellSitesVersion]);
 
-  // ── Cell-site popup: inline antenna-height editor (one delegated listener) ──
+  // ── Cell-site popup: inline height / RF editors + actions (one delegated listener) ──
   // The popup is an HTML string, so its buttons are wired here: on every popupopen
   // we attach (once per popup element) a click/keydown handler that reacts to
   // [data-cs-action] buttons inside a [data-cellsite-id] popup.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+
+    const role = () => useStore.getState().user?.role;
+    const popupHtml = (d: CellSiteDetail) =>
+      cellSitePopupHtml(d, canEditCellSiteHeight(role()), canPromoteCellSite(role()));
 
     function applyUpdate(popup: L.Popup, d: CellSiteDetail) {
       cellDetailsRef.current.set(d.id, d);
@@ -402,47 +439,139 @@ export default function MapView() {
         row.height_source = d.height_source;
         row.height_note = d.height_note;
         row.height_updated_at = d.height_updated_at;
+        row.tx_power_dbm = d.tx_power_dbm;
+        row.frequency_mhz = d.frequency_mhz;
+        row.rf_source = d.rf_source;
+        row.tx_power_source = d.tx_power_source;
+        row.frequency_source = d.frequency_source;
+        row.rf_note = d.rf_note;
+        row.rf_updated_at = d.rf_updated_at;
+        if (d.bands) row.bands = d.bands;
         cellMarkersRef.current.get(d.id)?.setStyle(cellSiteMarkerStyle(row));
       }
-      popup.setContent(cellSitePopupHtml(d, canEditCellSiteHeight(useStore.getState().user?.role)));
+      popup.setContent(popupHtml(d));
+    }
+
+    /** Cell-site ids with a promote request in flight (prevents double submit). */
+    const promoting = new Set<number>();
+
+    /** "נתח כיסוי מאתר זה": create (or reuse) an analysis Site and open it in the wizard. */
+    async function promote(popup: L.Popup, root: HTMLElement, d: CellSiteDetail, frequency?: number) {
+      if (promoting.has(d.id)) return;
+      promoting.add(d.id);
+      const btns = root.querySelectorAll<HTMLButtonElement>('[data-cs-action="promote"],[data-cs-action="promote-go"]');
+      btns.forEach((b) => { b.disabled = true; b.style.opacity = "0.6"; b.style.cursor = "wait"; });
+      let r;
+      try {
+        r = await cellSitesApi.promote(d.id, frequency != null ? { frequency_mhz: frequency } : {});
+      } catch (err) {
+        btns.forEach((b) => { b.disabled = false; b.style.opacity = ""; b.style.cursor = ""; });
+        throw err;
+      } finally {
+        promoting.delete(d.id);
+      }
+      const st = useStore.getState();
+      try {
+        st.setSites(await sitesApi.list());
+      } catch {
+        if (!st.sites.some((x) => x.id === r.site.id)) st.addSite(r.site);
+      }
+      const sel = useStore.getState().selectedSiteIds;
+      st.setSelectedSiteIds(sel.includes(r.site.id) ? sel : [...sel, r.site.id]);
+      st.setActiveSite(r.site.id);
+      st.setActiveTab("analysis");
+      popup.close();
+      notify(!r.created
+        ? `ℹ האתר "${r.site.name}" כבר קיים — נבחר לניתוח`
+        : r.site.params_source === "estimated"
+          ? `✅ נוצר אתר "${r.site.name}" עם פרמטרים משוערים — ניתן לערוך בלשונית אתרים`
+          : `✅ נוצר אתר "${r.site.name}" — נבחר לניתוח`);
     }
 
     async function handle(popup: L.Popup, root: HTMLElement, action: string) {
       const id = Number(root.dataset.cellsiteId);
       const d = cellDetailsRef.current.get(id);
       if (!d) return;
-      const slot = root.querySelector<HTMLElement>("[data-cs-height]");
-      const errEl = () => root.querySelector<HTMLElement>('[data-cs-field="err"]');
-      const canEdit = canEditCellSiteHeight(useStore.getState().user?.role);
-      if (!slot) return;
+      const hSlot = root.querySelector<HTMLElement>("[data-cs-height]");
+      const rfSlot = root.querySelector<HTMLElement>("[data-cs-rf]");
+      const actSlot = root.querySelector<HTMLElement>("[data-cs-actions]");
+      const canEdit = canEditCellSiteHeight(role());
+      // Error line of whichever form is open
+      const setErr = (msg: string) => {
+        const e = root.querySelector<HTMLElement>('[data-cs-field="err"]');
+        if (e) e.textContent = msg; else notify(`⚠ ${msg}`);
+      };
+      const val = (f: string) => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-cs-field="${f}"]`)?.value.trim() ?? "";
 
-      if (action === "edit" && canEdit) {
-        slot.innerHTML = cellSiteHeightFormHtml(d);
-        popup.update();
-        slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.focus();
+      if (action === "edit" && canEdit && hSlot) {
+        popup.setContent(popupHtml(d));            // close any other open form first
+        const slot = popup.getElement()?.querySelector<HTMLElement>("[data-cs-height]");
+        if (slot) { slot.innerHTML = cellSiteHeightFormHtml(d); popup.update(); slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.focus(); }
+        return;
+      }
+      if (action === "edit-rf" && canEdit && rfSlot) {
+        popup.setContent(popupHtml(d));
+        const slot = popup.getElement()?.querySelector<HTMLElement>("[data-cs-rf]");
+        if (slot) { slot.innerHTML = cellSiteRfFormHtml(d); popup.update(); slot.querySelector<HTMLInputElement>('[data-cs-field="tx"]')?.focus(); }
         return;
       }
       if (action === "cancel") {
-        popup.setContent(cellSitePopupHtml(d, canEdit));
+        popup.setContent(popupHtml(d));
         return;
       }
+      if (action === "link" && canEdit) {
+        const st = useStore.getState();
+        st.setLinkTransmitter({ kind: "cell_site", id: d.id, frequency_mhz: null });
+        st.setLinkPickTransmitter(false);
+        st.setLinkSubMode("link");
+        st.setActiveTab("link");
+        popup.close();
+        notify("🎯 האתר נבחר כמשדר — בחר מיקום מקלט בלשונית קישור נקודתי");
+        return;
+      }
+      if ((action === "promote" || action === "promote-go") && (!canPromoteCellSite(role()) || promoting.has(d.id))) return;
+      if (action === "promote" && actSlot) {
+        if (cellSiteBands(d).length > 1) {
+          actSlot.innerHTML = cellSitePromoteFormHtml(d);
+          popup.update();
+          return;
+        }
+        // single band → go straight away
+        action = "promote-go";
+      }
       try {
-        if (action === "save") {
-          const h = Number(slot.querySelector<HTMLInputElement>('[data-cs-field="h"]')?.value);
-          const note = slot.querySelector<HTMLInputElement>('[data-cs-field="note"]')?.value.trim();
-          if (!Number.isFinite(h) || h < 0.5 || h > 300) {
-            const e = errEl(); if (e) e.textContent = "גובה חייב להיות בין 0.5 ל-300 מטר";
-            return;
-          }
+        if (action === "promote-go") {
+          const f = Number(val("pfreq"));
+          await promote(popup, root, d, Number.isFinite(f) && f > 0 ? f : undefined);
+        } else if (action === "save" && hSlot) {
+          const h = Number(val("h"));
+          const note = val("note");
+          if (!Number.isFinite(h) || h < 0.5 || h > 300) { setErr("גובה חייב להיות בין 0.5 ל-300 מטר"); return; }
           applyUpdate(popup, await cellSitesApi.setHeight(id, h, note));
           notify(`✓ גובה האנטנה נשמר: ${h} מ'`);
         } else if (action === "reset") {
           const r = await cellSitesApi.resetHeight(id);
           applyUpdate(popup, r);
           notify(`↺ הגובה הוחזר להערכה לפי סוג האתר (${r.ant_height_m} מ')`);
+        } else if (action === "save-rf") {
+          const txRaw = val("tx");
+          const custom = val("freq-custom");
+          const freqRaw = custom || val("freq");
+          const tx = txRaw === "" ? undefined : Number(txRaw);
+          const freq = freqRaw === "" ? undefined : Number(freqRaw);
+          if (tx === undefined && freq === undefined) { setErr("יש להזין הספק או תדר"); return; }
+          if (tx !== undefined && (!Number.isFinite(tx) || tx < 0 || tx > 70)) { setErr("הספק חייב להיות בין 0 ל-70 dBm"); return; }
+          if (freq !== undefined && (!Number.isInteger(freq) || freq < 100 || freq > 6000)) { setErr("תדר חייב להיות מספר שלם בין 100 ל-6000 MHz"); return; }
+          const r = await cellSitesApi.setRf(id, { tx_power_dbm: tx, frequency_mhz: freq, note: val("rfnote") });
+          applyUpdate(popup, r);
+          notify(`✓ פרמטרי RF נשמרו: ${r.frequency_mhz ?? "—"} MHz · ${r.tx_power_dbm ?? "—"} dBm`);
+        } else if (action === "reset-rf") {
+          const r = await cellSitesApi.resetRf(id);
+          applyUpdate(popup, r);
+          notify(`↺ פרמטרי RF הוחזרו להערכה (${r.frequency_mhz ?? "—"} MHz · ${r.tx_power_dbm ?? "—"} dBm)`);
         }
       } catch (err) {
-        const e = errEl(); if (e) e.textContent = apiErrorText(err, "השמירה נכשלה");
+        setErr(apiErrorText(err, action.startsWith("promote") ? "יצירת האתר נכשלה" : "השמירה נכשלה"));
       }
     }
 
@@ -460,7 +589,8 @@ export default function MapView() {
         const root = t.closest<HTMLElement>("[data-cellsite-id]");
         if (!root || !t.matches("[data-cs-field]")) return;
         ev.stopPropagation();   // keep Leaflet's keyboard handler (Esc closes popup, +/- zoom) out of the form
-        if (ev.key === "Enter")  { ev.preventDefault(); void handle(e.popup, root, "save"); }
+        const submit = t.closest("[data-cs-rf]") ? "save-rf" : t.closest("[data-cs-actions]") ? "promote-go" : "save";
+        if (ev.key === "Enter")  { ev.preventDefault(); void handle(e.popup, root, submit); }
         if (ev.key === "Escape") { ev.preventDefault(); void handle(e.popup, root, "cancel"); }
       });
     };
@@ -749,6 +879,141 @@ export default function MapView() {
     });
   }, [bbox, selectedSiteIds, sites]);
 
+  // ── Link: draggable receiver marker ─────────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!linkReceiver) {
+      if (linkRxMarkerRef.current) { map.removeLayer(linkRxMarkerRef.current); linkRxMarkerRef.current = null; }
+      return;
+    }
+    const pos: L.LatLngExpression = [linkReceiver.lat, linkReceiver.lon];
+    if (linkRxMarkerRef.current) {
+      linkRxMarkerRef.current.setLatLng(pos);
+      return;
+    }
+    const icon = L.divIcon({
+      className: "",
+      html: `<div title="מקלט — גרור לשינוי מיקום" style="
+        width:26px;height:26px;border-radius:50%;
+        background:rgba(0,212,255,0.25);border:2px solid #00d4ff;
+        box-shadow:0 0 10px rgba(0,212,255,0.7);
+        display:flex;align-items:center;justify-content:center;font-size:13px;cursor:move;">📱</div>`,
+      iconSize: [26, 26], iconAnchor: [13, 13],
+    });
+    const m = L.marker(pos, { icon, draggable: true, zIndexOffset: 1200, keyboard: false })
+      .bindTooltip("מקלט (מכשיר) — גרור לכוונון", { direction: "top", offset: [0, -12] })
+      .addTo(map);
+    m.on("dragend", () => {
+      const p = m.getLatLng();
+      useStore.getState().setLinkReceiver({ lat: p.lat, lon: p.lng });
+    });
+    linkRxMarkerRef.current = m;
+  }, [linkReceiver]);
+
+  // ── Link result: line coloured by level + tx / obstacle markers ────────────
+  const linkFitKeyRef = useRef("");
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (linkLayerRef.current) { map.removeLayer(linkLayerRef.current); linkLayerRef.current = null; }
+    const r = linkResult;
+    if (!r || linkSubMode !== "link") return;
+    const tx = r.transmitter, rx = r.receiver;
+    if (![tx?.lat, tx?.lon, rx?.lat, rx?.lon].every((v) => typeof v === "number" && Number.isFinite(v))) return;
+
+    const color = levelColor(r.level);
+    const group = L.layerGroup().addTo(map);
+    // dark casing under the coloured line for contrast on any base map
+    L.polyline([[tx.lat, tx.lon], [rx.lat, rx.lon]], { color: "#000", weight: 7, opacity: 0.45, interactive: false }).addTo(group);
+    L.polyline([[tx.lat, tx.lon], [rx.lat, rx.lon]], {
+      color, weight: 4, opacity: 0.95, dashArray: r.is_los ? undefined : "8,6",
+    }).bindTooltip(`<div style="font-family:sans-serif;font-size:12px;direction:rtl">
+        <b>${escHtml(tx.name ?? "משדר")}</b> → ${escHtml(rx.name || rx.profile_name || "מקלט")}<br>
+        RSSI: <b>${fmtDbm(r.rssi_dbm, 1)}</b> · מרווח: <b>${fmtDb(r.margin_db)}</b><br>
+        ${levelHe(r.level)} · ${r.is_los ? "קו ראייה (LOS)" : "ללא קו ראייה (NLOS)"} · ${fmtKm(r.distance_km)}
+      </div>`, { sticky: true }).addTo(group);
+    L.circleMarker([tx.lat, tx.lon], { radius: 8, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 })
+      .bindTooltip(`משדר: ${escHtml(tx.name ?? "")}`, { direction: "top" }).addTo(group);
+    const ob = r.worst_obstacle;
+    if (ob && Number.isFinite(ob.lat) && Number.isFinite(ob.lon)) {
+      L.marker([ob.lat, ob.lon], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="color:#ff3b5c;font-size:16px;font-weight:900;text-shadow:0 0 3px #000">▲</div>`,
+          iconSize: [16, 16], iconAnchor: [8, 12],
+        }),
+      }).bindTooltip(`מכשול עיקרי: ${Math.round(ob.terrain_m)} מ' (${ob.dist_km.toFixed(2)} ק"מ מהמשדר)`, { direction: "top" })
+        .addTo(group);
+    }
+    linkLayerRef.current = group;
+    // Re-fit only for new geometry (not on sub-mode toggles / history deletes)
+    const key = `${tx.lat},${tx.lon},${rx.lat},${rx.lon}`;
+    if (linkFitKeyRef.current !== key) {
+      linkFitKeyRef.current = key;
+      map.fitBounds(L.latLngBounds([[tx.lat, tx.lon], [rx.lat, rx.lon]]).pad(0.25), { maxZoom: 15 });
+    }
+  }, [linkResult, linkSubMode]);
+
+  // ── Best servers: lines receiver → each ranked cell site ──────────────────
+  const bestFitKeyRef = useRef<BestServersResult | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (bestLayerRef.current) { map.removeLayer(bestLayerRef.current); bestLayerRef.current = null; }
+    const res = bestServersResult;
+    const rx = res?.receiver;
+    if (!res?.results?.length || linkSubMode !== "best" || !rx || !Number.isFinite(rx.lat) || !Number.isFinite(rx.lon)) return;
+
+    const group = L.layerGroup().addTo(map);
+    const n = res.results.length;
+    const bounds = L.latLngBounds([[rx.lat, rx.lon], [rx.lat, rx.lon]]);
+    // Lowest rank last so the best server is drawn on top
+    [...res.results].sort((a, b) => b.rank - a.rank).forEach((e) => {
+      const c = e.cell_site;
+      if (!Number.isFinite(c?.lat) || !Number.isFinite(c?.lon)) return;
+      const hl = highlightedServerId === c.id;
+      const dim = highlightedServerId != null && !hl;
+      const color = levelColor(e.link?.level);
+      const weight = hl ? 7 : Math.max(1.5, 6 - (e.rank - 1) * (4 / Math.max(1, n - 1)));
+      const opacity = dim ? 0.25 : hl ? 1 : Math.max(0.45, 1 - (e.rank - 1) * 0.12);
+      L.polyline([[rx.lat, rx.lon], [c.lat, c.lon]], {
+        color, weight, opacity, dashArray: e.link?.is_los ? undefined : "7,6",
+      }).bindTooltip(`<div style="font-family:sans-serif;font-size:12px;direction:rtl">
+          <b>#${e.rank} ${escHtml(c.operator_he ?? c.operator)}</b> · ${escHtml(c.site_type_he ?? "")}<br>
+          RSSI: <b>${fmtDbm(e.link?.rssi_dbm, 1)}</b> · מרווח: <b>${fmtDb(e.link?.margin_db)}</b><br>
+          ${fmtKm(e.link?.distance_km)} · ${e.link?.is_los ? "LOS" : "NLOS"}
+        </div>`, { sticky: true })
+        .on("click", () => useStore.getState().setHighlightedServerId(c.id))
+        .addTo(group);
+      L.marker([c.lat, c.lon], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="width:20px;height:20px;border-radius:50%;background:${color};
+            border:2px solid ${hl ? "#fff" : "#0a0e14"};color:#000;font:700 11px sans-serif;
+            display:flex;align-items:center;justify-content:center;opacity:${dim ? 0.5 : 1};
+            box-shadow:0 0 6px rgba(0,0,0,0.6)">${e.rank}</div>`,
+          iconSize: [20, 20], iconAnchor: [10, 10],
+        }),
+        zIndexOffset: hl ? 1100 : 1000 - e.rank,
+      }).on("click", () => useStore.getState().setHighlightedServerId(c.id)).addTo(group);
+      bounds.extend([c.lat, c.lon]);
+    });
+    bestLayerRef.current = group;
+    // Fit only when a new result arrives (not on every highlight change)
+    if (bestFitKeyRef.current !== res) {
+      bestFitKeyRef.current = res;
+      map.fitBounds(bounds.pad(0.2), { maxZoom: 15 });
+    }
+  }, [bestServersResult, highlightedServerId, linkSubMode]);
+
+  // Picking a transmitter on the map needs the cell-sites layer
+  useEffect(() => {
+    if (!linkPickTransmitter) return;
+    const st = useStore.getState();
+    if (!st.mapLayers.find((l) => l.id === "cellsites")?.visible) st.toggleMapLayer("cellsites");
+  }, [linkPickTransmitter]);
+
   // ── Sync Active Bounding Box ─────────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
@@ -832,8 +1097,17 @@ export default function MapView() {
       {/* Draw indicator */}
       {drawMode && (
         <div className={styles.drawBanner}>
-          {drawMode === "point" ? "בחירת מיקום - לחץ על המפה" : "שרטוט - לחץ, החזק וגרור לקביעת תא השטח"}
+          {drawMode === "point" ? "בחירת מיקום - לחץ על המפה"
+            : drawMode === "linkpoint" ? "בחירת מיקום המקלט - לחץ על המפה"
+            : drawMode === "waypoint" ? "הוספת נקודות מסלול - לחץ על המפה"
+            : "שרטוט - לחץ, החזק וגרור לקביעת תא השטח"}
           <button className={styles.cancelDraw} onClick={() => setDrawMode(null)}>ביטול</button>
+        </div>
+      )}
+      {!drawMode && linkPickTransmitter && (
+        <div className={styles.drawBanner}>
+          בחירת משדר - לחץ על אתר סלולרי במפה
+          <button className={styles.cancelDraw} onClick={() => setLinkPickTransmitter(false)}>ביטול</button>
         </div>
       )}
 
