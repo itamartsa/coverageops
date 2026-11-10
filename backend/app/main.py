@@ -2,6 +2,9 @@
 CoverageOps – Backend API
 FastAPI + PostgreSQL + PostGIS
 """
+import asyncio
+import contextlib
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,9 +15,14 @@ from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.migrations import run_startup_migrations
 from app.api import auth, sites, coverage, users, cell_sites, device_profiles, link
+from app.api import field_ingest, field
 from app.models import cell_site  # noqa: F401  (register cell_sites tables)
 from app.models import link_result  # noqa: F401  (register link_results table)
 from app.models import device_profile  # noqa: F401  (register device_profiles table)
+from app.models import field as field_models  # noqa: F401  (register field_* tables)
+from app.core.device_auth import FieldHTTPError, field_http_error_handler, pepper_is_default
+from app.services.field_config import seed_field_defaults
+from app.services.field_maintenance import loop_enabled, maintenance_loop
 from app.models.device_profile import seed_device_profiles
 from app.core.database import SessionLocal
 from app.services.cell_sites_import import ensure_loaded
@@ -25,6 +33,20 @@ def init_db() -> None:
     run_startup_migrations(engine)
     load_device_profiles()
     load_cell_sites()
+    load_field_defaults()
+
+
+def load_field_defaults() -> None:
+    """Field reception: default group "כללי", operator map, default alert rules."""
+    if pepper_is_default():
+        print("⚠️  FIELD_TOKEN_PEPPER is the default value — set it in production")
+    db = SessionLocal()
+    try:
+        seed_field_defaults(db)
+    except Exception as e:  # never block startup
+        print(f"⚠️  field defaults seed skipped: {e}")
+    finally:
+        db.close()
 
 
 def load_device_profiles() -> None:
@@ -54,7 +76,17 @@ def load_cell_sites() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    task = None
+    if loop_enabled():   # field maintenance (aggregation/alerts/retention/purge); off under pytest
+        try:
+            task = asyncio.create_task(maintenance_loop())
+        except Exception as e:  # never block startup
+            logging.getLogger(__name__).warning("field maintenance loop not started: %s", e)
     yield
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
 
 
 app = FastAPI(
@@ -65,6 +97,8 @@ app = FastAPI(
     redoc_url="/api/redoc",
     lifespan=lifespan,
 )
+
+app.add_exception_handler(FieldHTTPError, field_http_error_handler)
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -85,6 +119,9 @@ app.include_router(coverage.router, prefix="/api/coverage", tags=["coverage"])
 app.include_router(cell_sites.router, prefix="/api/cell-sites", tags=["cell-sites"])
 app.include_router(device_profiles.router, prefix="/api/device-profiles", tags=["device-profiles"])
 app.include_router(link.router,     prefix="/api/link",     tags=["link"])
+# field reception: device endpoints first, so /devices/enroll|heartbeat|me/* win over /devices/{id}
+app.include_router(field_ingest.router, prefix="/api/field", tags=["field-ingest"])
+app.include_router(field.router,        prefix="/api/field", tags=["field"])
 
 
 @app.get("/api/health")
