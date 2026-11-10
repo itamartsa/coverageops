@@ -696,4 +696,307 @@ export const linkApi = {
     (await api.post("/api/link/best-servers", req, { timeout: 180000 })).data,
 };
 
+// ── Field reception (/api/field) ──────────────────────────────────────────────
+// Shapes follow backend/app/api/field.py (the code is the source of truth).
+// List endpoints return {fields, rows}; they are mapped to objects like cellSitesApi.list.
+
+/** {fields, rows} → objects */
+function rowsToObjects<T>(data: { fields: string[]; rows: unknown[][] }): T[] {
+  const f = data.fields;
+  return data.rows.map((r) => Object.fromEntries(f.map((k, i) => [k, r[i]])) as unknown as T);
+}
+
+/** Query-string params, dropping null / undefined / "" values. */
+function qs(p: object): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p as Record<string, unknown>)) if (v !== null && v !== undefined && v !== "") out[k] = String(v);
+  return out;
+}
+
+export interface FieldWindow { from: string; to: string }
+
+export interface RsrpStat { p5: number | null; p50: number | null; n: number }
+
+export interface FieldKpis {
+  samples: number;
+  time_s: number;
+  /** index i = tier i (0 = marginal … 4 = excellent); denominator = classified time only */
+  pct_time_by_tier: (number | null)[];
+  pct_time_unclassified: number | null;
+  pct_time_unknown: number | null;
+  rsrp: { lte: RsrpStat; nr_sa: RsrpStat; nsa_nr_leg: RsrpStat };
+  oos_minutes: number | null;
+  cell_change_per_hour: number | null;
+  nsa_share_pct: number | null;
+  data_connected_pct: number | null;
+  fallback_pct: number | null;
+  stale_excluded_pct: number | null;
+  age_unknown_pct: number | null;
+  devices_reporting_15m: { reporting: number; expected: number; pct: number | null };
+}
+
+export interface FieldSummary {
+  from: string; to: string;
+  fleet: {
+    total: number; active: number; degraded: number; paused: number; no_contact: number;
+    offline: number; never_seen: number; withdrawn: number; revoked: number;
+  };
+  kpis: FieldKpis;
+  kpi_notes_he: string;
+  freshness: { last_sample_received_at: string | null; server_time: string };
+}
+
+export interface FieldStatusFlags {
+  config_pending: boolean; no_recent_samples: boolean; upload_lag: boolean; cell_stale: boolean; coarse: boolean;
+}
+
+export interface FieldDeviceRow {
+  id: string; label: string | null; ownership: "ORG" | "PERSONAL";
+  group_id: number | null; group: string | null;
+  status: string; status_label_he: string; status_since: string | null;
+  monitoring_state: string | null; degraded_reasons: string[]; effective_location_mode: string | null;
+  tier: number | null; tier_stale: boolean; rsrp: number | null; nr_ss_rsrp: number | null;
+  operator_key: string | null; operator_name: string | null; network_type: string | null;
+  battery_pct: number | null; is_charging: boolean | null; last_seen_at: string | null;
+  app_version: string | null; config_pending: boolean; open_alerts: number; open_commands: number;
+  flags: FieldStatusFlags;
+}
+
+export interface FieldLiveRow {
+  id: string; label: string | null; lat: number; lon: number; acc: number | null;
+  precision: "precise" | "coarse"; tier: number | null; tier_stale: boolean; rsrp: number | null;
+  network_type: string | null; operator_key: string | null; status: string; loc_ts: string | null;
+}
+
+export interface FieldCommand {
+  id: string; type: string; status: string; issued_by: string | number | null;
+  issued_at: string | null; delivered_at: string | null; acked_at: string | null; expires_at: string | null;
+}
+
+export interface FieldAlert {
+  id: number; type: string; type_label_he: string; severity: "info" | "warning" | "critical";
+  status: "open" | "acked" | "resolved"; message_he: string;
+  device_id: string | null; device_label: string | null;
+  gx: number | null; gy: number | null; operator_key: string | null; details: Record<string, unknown> | null;
+  opened_at: string | null; last_seen_at: string | null; resolved_at: string | null;
+  occurrences: number; acked_by: string | null; acked_at: string | null; note: string | null;
+}
+
+export interface FieldDeviceConfig {
+  sampling_interval_s: number; min_distance_m: number; stationary_interval_s: number; upload_interval_s: number;
+  upload_wifi_only: boolean; active_test_interval_s: number; collect_neighbors: boolean;
+  location_mode: "precise" | "coarse" | "off"; schedule: { days: number[]; start: string; end: string }[] | null;
+  low_battery_threshold_pct: number; allow_user_pause: boolean; config_version?: number;
+}
+
+export interface FieldDeviceDetail {
+  id: string; label: string | null; ownership: "ORG" | "PERSONAL"; admin_status: string;
+  status: string; status_label_he: string; status_since: string | null; status_flags: FieldStatusFlags;
+  group_id: number | null; group: string | null; notes: string | null;
+  model: string | null; manufacturer: string | null; os_version: string | null; app_version: string | null;
+  consent_version: string | null; consented_at: string | null; enrolled_at: string | null;
+  revoked_at: string | null; withdrawn_at: string | null;
+  config: FieldDeviceConfig; config_override: Partial<FieldDeviceConfig> | null;
+  config_version: number | null; applied_config_version: number | null;
+  monitoring_state: string | null; state_changed_at: string | null;
+  degraded_reasons: { code: string; label_he: string; known: boolean }[];
+  effective_location_mode: string | null; location_services_enabled: boolean | null;
+  permissions: Record<string, unknown> | null;
+  battery_pct: number | null; is_charging: boolean | null; queue_size: number | null;
+  evicted_samples_total: number | null;
+  last_heartbeat_at: string | null; last_sample_at: string | null; last_sample_received_at: string | null;
+  last_sample_ts_reported: string | null;
+  location: { lat: number; lon: number; acc: number | null; precision: "precise" | "coarse"; ts: string | null } | null;
+  signal: {
+    tier: number | null; key: string; label_he: string; token: string; min_dbm?: number | null;
+    tier_stale: boolean; rsrp_dbm: number | null; nr_ss_rsrp_dbm: number | null; network_type: string | null;
+    tier_basis_he: string | null; operator_key: string | null; operator_name: string | null;
+    service_state: string | null;
+  };
+  current_cell: Record<string, unknown> | null;
+  nr_leg: Record<string, unknown> | null;
+  commands: FieldCommand[];
+  open_alerts: FieldAlert[];
+}
+
+export type DeviceTsMetric = "rsrp" | "nr_ss_rsrp" | "nr_leg_ss_rsrp" | "rsrq" | "sinr" | "battery";
+/** point = [t, min, avg, max, n, tier_mode] */
+export type DeviceTsPoint = [string, number, number, number, number, number | null];
+export interface DeviceTimeseries {
+  metric: DeviceTsMetric; label_he: string; unit: string; bucket_s: number; from: string; to: string;
+  series: { meas_tech: string; points: DeviceTsPoint[] }[];
+  /** [t0, t1, reason] — reason: oos | no_data | paused | stale */
+  gaps: [string, string, "oos" | "no_data" | "paused" | "stale"][];
+}
+
+export interface TrackFeature {
+  type: "Feature";
+  geometry: { type: "LineString" | "Point" | "Polygon"; coordinates: any };
+  properties: {
+    kind: "segment" | "coarse_cell" | "point"; tier: number | null; stale: boolean;
+    from?: string; to?: string; ts?: string; rsrp_dbm?: number | null; network_type?: string | null;
+  };
+}
+export interface DeviceTrack {
+  type: "FeatureCollection"; features: TrackFeature[];
+  properties: { device_id: string; from: string; to: string; points_total: number; points_returned: number; thinned: boolean };
+}
+
+export type HeatMeasure = "lte_rsrp" | "nr_ss_rsrp";
+export type HeatMetric = "p50" | "p5" | "tier" | "n" | "oos_pct";
+export interface HeatCell { gx: number; gy: number; n: number; value: number | null; tier: number | null; n_devices?: number }
+export interface HeatmapResult {
+  level: 100 | 500 | 2500; measure: HeatMeasure; metric: HeatMetric; meas_tech: string;
+  cell_deg: [number, number]; from: string; to: string; source: string; includes_coarse: boolean;
+  cells: HeatCell[]; suppressed: number; k_min: number | null;
+}
+
+export interface DeadZone {
+  id: string; operator_key: string | null; tech: "LTE" | "NR";
+  centroid_lat: number; centroid_lon: number; cells: number; area_km2: number;
+  p50: number | null; oos_pct: number | null; n: number; n_devices?: number;
+  severity: "critical" | "warning"; first_seen: string | null; last_seen: string | null;
+  polygon: { type: "MultiPolygon"; coordinates: number[][][][] };
+}
+
+export interface BreakdownRow {
+  key: string | number; label: string; n: number; time_s: number;
+  pct_time_by_tier: (number | null)[]; pct_time_unclassified: number | null;
+  rsrp: { lte: RsrpStat; nr_sa: RsrpStat; nsa_nr_leg: RsrpStat };
+  oos_min: number | null; cell_changes_per_h: number | null; nsa_share: number | null;
+  stale_excluded_pct: number | null; n_devices?: number;
+}
+export interface BreakdownResult { by: string; from: string; to: string; fair: boolean; rows: BreakdownRow[]; suppressed: number }
+
+export type AggTsMetric = "rsrp_p50" | "rsrp_p5" | "pct_time_ge_medium" | "oos_minutes" | "samples";
+export interface AggTimeseries {
+  metric: AggTsMetric; bucket: "1h" | "1d"; from: string; to: string;
+  /** points = [t, value, n] */
+  series: { key: string | null; meas_tech: string | null; points: [string, number | null, number][] }[];
+  suppressed: number;
+}
+
+export interface EnrollmentCode {
+  id: number; label: string | null; code_hint: string; group_id: number | null; group: string | null;
+  ownership: "ORG" | "PERSONAL"; max_uses: number; use_count: number; expires_at: string | null;
+  created_by: string | null; created_at: string | null; revoked_at: string | null;
+}
+export interface EnrollmentCodeCreated extends EnrollmentCode {
+  /** Plain-text code — returned ONLY by the create call, never again */
+  code: string; qr_payload: string; qr_svg: string; note_he: string;
+}
+
+export interface FieldGroup {
+  id: number; name: string; description: string | null; is_default: boolean;
+  config: Partial<FieldDeviceConfig>; effective_config: FieldDeviceConfig; device_count: number;
+  updated_at: string | null; updated_by: string | null; personal_note_he: string;
+}
+
+export interface FieldOperator { operator_key: string; name_he: string; cell_sites_operator: string | null; note: string | null }
+
+export interface FieldAuditEntry {
+  id: number; action: string; user_id: number | null; username: string | null;
+  detail: any; ip_address: string | null; created_at: string | null;
+}
+
+export interface TiersMeta {
+  measure_he: string;
+  tiers: { tier: number; key: string; label_he: string; min_dbm: number | null; token: string }[];
+  unclassified: { key: string; label_he: string; token: string };
+  status_labels_he: Record<string, string>;
+}
+
+export interface RequirementItem { text_he: string; status: string; source: string; note_he?: string }
+export interface DeviceRequirements {
+  title_he: string; headline_he: string; spec_document: string;
+  status_legend_he: Record<string, string>;
+  sections: { key: string; title_he: string; items: RequirementItem[] }[];
+}
+
+export const fieldApi = {
+  tiersMeta: async (): Promise<TiersMeta> => (await api.get("/api/field/meta/tiers")).data,
+  deviceRequirements: async (): Promise<DeviceRequirements> =>
+    (await api.get("/api/field/meta/device-requirements")).data,
+  operators: async (): Promise<FieldOperator[]> => (await api.get("/api/field/operators")).data,
+
+  summary: async (p: FieldWindow & { group_id?: number | null; operator?: string | null }): Promise<FieldSummary> =>
+    (await api.get("/api/field/summary", { params: qs(p) })).data,
+
+  devices: async (p: { group_id?: number | null; status?: string; ownership?: string; q?: string; sort?: string } = {})
+    : Promise<{ rows: FieldDeviceRow[]; server_time: string }> => {
+    const { data } = await api.get("/api/field/devices", { params: qs(p) });
+    return { rows: rowsToObjects<FieldDeviceRow>(data), server_time: data.server_time };
+  },
+  live: async (p: { bbox?: string } = {}): Promise<{ rows: FieldLiveRow[]; server_time: string }> => {
+    const { data } = await api.get("/api/field/devices/live", { params: qs(p) });
+    return { rows: rowsToObjects<FieldLiveRow>(data), server_time: data.server_time };
+  },
+  device: async (id: string): Promise<FieldDeviceDetail> => (await api.get(`/api/field/devices/${id}`)).data,
+  /** Audit-logged on the server (FIELD_TRACK_VIEW). Window ≤ 7 days. */
+  track: async (id: string, p: FieldWindow & { max_points?: number }): Promise<DeviceTrack> =>
+    (await api.get(`/api/field/devices/${id}/track`, { params: qs(p) })).data,
+  deviceTimeseries: async (id: string, p: FieldWindow & { metric: DeviceTsMetric }): Promise<DeviceTimeseries> =>
+    (await api.get(`/api/field/devices/${id}/timeseries`, { params: qs(p) })).data,
+  updateDevice: async (id: string, body: { label?: string | null; group_id?: number | null; notes?: string | null;
+    config_override?: Partial<FieldDeviceConfig> | null }): Promise<FieldDeviceDetail> =>
+    (await api.patch(`/api/field/devices/${id}`, body)).data,
+  revoke: async (id: string): Promise<{ status: string }> => (await api.post(`/api/field/devices/${id}/revoke`)).data,
+  /** ORG devices: anonymise only (server answers 422 org_anonymize_only to mode=delete). */
+  remove: async (id: string, mode?: "delete" | "anonymize"): Promise<{ data_action: string; completes_by: string }> =>
+    (await api.delete(`/api/field/devices/${id}`, { params: qs({ mode }) })).data,
+
+  issueCommand: async (id: string, type: "sample_now" | "upload_now")
+    : Promise<FieldCommand & { warning_he?: string }> =>
+    (await api.post(`/api/field/devices/${id}/commands`, { type })).data,
+  deviceCommands: async (id: string, limit = 20): Promise<FieldCommand[]> =>
+    (await api.get(`/api/field/devices/${id}/commands`, { params: { limit } })).data,
+  cancelCommand: async (commandId: string): Promise<FieldCommand> =>
+    (await api.delete(`/api/field/commands/${commandId}`)).data,
+
+  heatmap: async (p: FieldWindow & { bbox: string; measure: HeatMeasure; metric?: HeatMetric;
+    level?: 100 | 500 | 2500; operator?: string | null }): Promise<HeatmapResult> => {
+    const { data } = await api.get("/api/field/heatmap", { params: qs(p) });
+    const { fields, rows, ...rest } = data;
+    return { ...rest, cells: rowsToObjects<HeatCell>({ fields, rows }) };
+  },
+  deadZones: async (p: FieldWindow & { operator?: string | null; tech?: "LTE" | "NR" | null; bbox?: string })
+    : Promise<DeadZone[]> => (await api.get("/api/field/dead-zones", { params: qs(p) })).data,
+  breakdown: async (p: FieldWindow & { by: "operator" | "tech" | "band" | "cell" | "group"; fair?: boolean;
+    operator?: string | null; group_id?: number | null }): Promise<BreakdownResult> =>
+    (await api.get("/api/field/breakdown", { params: qs(p) })).data,
+  timeseriesAgg: async (p: FieldWindow & { metric: AggTsMetric; bucket: "1h" | "1d"; operator?: string | null;
+    meas_tech?: "LTE" | "NR" | null; group_id?: number | null }): Promise<AggTimeseries> =>
+    (await api.get("/api/field/timeseries", { params: qs(p) })).data,
+
+  alerts: async (p: { status?: string; type?: string; device_id?: string; limit?: number } = {}): Promise<FieldAlert[]> =>
+    (await api.get("/api/field/alerts", { params: qs(p) })).data,
+  ackAlert: async (id: number, note?: string): Promise<FieldAlert> =>
+    (await api.post(`/api/field/alerts/${id}/ack`, note ? { note } : {})).data,
+  resolveAlert: async (id: number, note?: string): Promise<FieldAlert> =>
+    (await api.post(`/api/field/alerts/${id}/resolve`, note ? { note } : {})).data,
+
+  enrollmentCodes: async (includeExpired = false): Promise<EnrollmentCode[]> =>
+    (await api.get("/api/field/enrollment-codes", { params: { include_expired: includeExpired } })).data,
+  createEnrollmentCode: async (body: { label?: string | null; group_id?: number | null; ownership: "ORG" | "PERSONAL";
+    max_uses: number; ttl_hours: number }): Promise<EnrollmentCodeCreated> =>
+    (await api.post("/api/field/enrollment-codes", body)).data,
+  revokeEnrollmentCode: async (id: number): Promise<void> => { await api.delete(`/api/field/enrollment-codes/${id}`); },
+
+  groups: async (): Promise<FieldGroup[]> => (await api.get("/api/field/groups")).data,
+  createGroup: async (body: { name: string; description?: string | null; config: Partial<FieldDeviceConfig> })
+    : Promise<FieldGroup> => (await api.post("/api/field/groups", body)).data,
+  updateGroup: async (id: number, body: { name?: string; description?: string | null; config?: Partial<FieldDeviceConfig> })
+    : Promise<FieldGroup> => (await api.put(`/api/field/groups/${id}`, body)).data,
+  deleteGroup: async (id: number): Promise<void> => { await api.delete(`/api/field/groups/${id}`); },
+
+  audit: async (p: { limit?: number } = {}): Promise<FieldAuditEntry[]> =>
+    (await api.get("/api/field/audit", { params: qs(p) })).data,
+
+  /** Device-level export — audit-logged on the server (FIELD_EXPORT). Window ≤ 31 days. */
+  exportMeasurementsCsv: (p: FieldWindow & { device_id?: string; group_id?: number | null }): Promise<void> =>
+    downloadAuthed(`/api/field/export/measurements.csv?${new URLSearchParams(qs(p))}`, "field_measurements.csv"),
+  exportKpisCsv: (p: FieldWindow & { by: string; fair?: boolean; operator?: string | null }): Promise<void> =>
+    downloadAuthed(`/api/field/export/kpis.csv?${new URLSearchParams(qs(p))}`, `field_kpis_${p.by}.csv`),
+};
+
 export default api;

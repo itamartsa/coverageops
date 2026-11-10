@@ -22,7 +22,7 @@ export type BaseMapId =
   | "topo"
   | "satellite";
 
-export type LayerType = "cellular" | "dem" | "coverage";
+export type LayerType = "cellular" | "dem" | "coverage" | "field";
 
 export interface MapLayer {
   id:        string;
@@ -44,6 +44,7 @@ export interface MapLayer {
 const SYSTEM_LAYERS: MapLayer[] = [
   { id: "cellsites", name: "אתרי סלולר – מאגר ממשלתי", type: "cellular", visible: false },
   { id: "dem",      name: "גבהים (DEM)",          type: "dem",      visible: false },
+  { id: "fieldheat", name: "מדידות שטח – מפת חום", type: "field",    visible: false },
 ];
 
 /** Fresh copy of the system layers — every session starts with all layers hidden. */
@@ -84,6 +85,33 @@ export interface LinkReceiverOpts {
 const EMPTY_RX_OPTS: LinkReceiverOpts = {
   device_profile_id: null, height_agl: "", sensitivity_dbm: "", antenna_gain_dbi: "", name: "",
 };
+
+// ── Field reception (/field) ─────────────────────────────────────────────────
+
+export type FieldWindowKey = "1h" | "24h" | "7d" | "30d";
+export const FIELD_WINDOWS: FieldWindowKey[] = ["1h", "24h", "7d", "30d"];
+export type FieldTech = "LTE" | "NR";
+
+/** Filters of the /field page — applied to every tab. */
+export interface FieldFilters {
+  window: FieldWindowKey;
+  /** null = all groups (VIEWER never sends a group: the server forbids it) */
+  groupId: number | null;
+  /** operator_key values ("425-01"…); empty = all */
+  operators: string[];
+  /** empty = both; the KPI tiles always show LTE and NR side by side */
+  techs: FieldTech[];
+}
+const DEFAULT_FIELD_FILTERS: FieldFilters = { window: "24h", groupId: null, operators: [], techs: [] };
+
+/** Options of the "מדידות שטח" layer on the main map. */
+export interface FieldHeatOpts {
+  metric: "p50" | "p5" | "oos_pct";
+  measure: "lte_rsrp" | "nr_ss_rsrp";
+  operator: string | null;
+  window: "24h" | "7d" | "30d";
+}
+const DEFAULT_FIELD_HEAT: FieldHeatOpts = { metric: "p50", measure: "lte_rsrp", operator: null, window: "7d" };
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
@@ -191,6 +219,12 @@ interface AppState {
   /** While true, the next click on a cell-site marker picks it as the link transmitter */
   linkPickTransmitter: boolean;
   setLinkPickTransmitter: (v: boolean) => void;
+
+  // ── Field reception ─────────────────────────────────────────────────────────
+  fieldFilters: FieldFilters;
+  setFieldFilters: (f: Partial<FieldFilters>) => void;
+  fieldHeatOpts: FieldHeatOpts;
+  setFieldHeatOpts: (o: Partial<FieldHeatOpts>) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -213,6 +247,7 @@ export const useStore = create<AppState>()(
           routeWaypoints: [], crossSectionResult: null, crossSectionSiteId: null,
           linkTransmitter: null, linkReceiver: null, linkResult: null,
           bestServersResult: null, highlightedServerId: null, linkPickTransmitter: false,
+          fieldFilters: DEFAULT_FIELD_FILTERS, fieldHeatOpts: DEFAULT_FIELD_HEAT,
         });
       },
 
@@ -345,6 +380,11 @@ export const useStore = create<AppState>()(
           return { layerNames };
         }),
 
+      fieldFilters: DEFAULT_FIELD_FILTERS,
+      setFieldFilters: (f) => set((s) => ({ fieldFilters: { ...s.fieldFilters, ...f } })),
+      fieldHeatOpts: DEFAULT_FIELD_HEAT,
+      setFieldHeatOpts: (o) => set((s) => ({ fieldHeatOpts: { ...s.fieldHeatOpts, ...o } })),
+
       mapFitRequest: null,
       requestMapFit: (b) => set((s) => ({ mapFitRequest: { ...b, seq: (s.mapFitRequest?.seq ?? 0) + 1 } })),
     }),
@@ -360,6 +400,8 @@ export const useStore = create<AppState>()(
         activeBaseMapId: s.activeBaseMapId,
         cellSiteFilter: s.cellSiteFilter,
         layerNames:     s.layerNames,
+        fieldFilters:   s.fieldFilters,
+        fieldHeatOpts:  s.fieldHeatOpts,
       }),
       // v0 persisted `mapLayers` — drop them
       migrate: (persisted) => {
@@ -379,8 +421,31 @@ export const useStore = create<AppState>()(
           picked.cellSiteFilter = { ...current.cellSiteFilter, ...p.cellSiteFilter };
         }
         if (p.layerNames && typeof p.layerNames === "object") picked.layerNames = p.layerNames;
+        picked.fieldFilters = sanitizeFieldFilters(p.fieldFilters);
+        picked.fieldHeatOpts = sanitizeFieldHeat(p.fieldHeatOpts);
         return { ...current, ...picked, mapLayers: initialMapLayers() };
       },
     }
   )
 );
+
+// ── persisted field options: accept only well-formed values ─────────────────
+function sanitizeFieldFilters(v: unknown): FieldFilters {
+  const p = (v ?? {}) as Partial<FieldFilters>;
+  return {
+    window: FIELD_WINDOWS.includes(p.window as FieldWindowKey) ? (p.window as FieldWindowKey) : DEFAULT_FIELD_FILTERS.window,
+    groupId: typeof p.groupId === "number" ? p.groupId : null,
+    operators: Array.isArray(p.operators) ? p.operators.filter((x) => typeof x === "string") : [],
+    techs: Array.isArray(p.techs) ? p.techs.filter((x): x is FieldTech => x === "LTE" || x === "NR") : [],
+  };
+}
+
+function sanitizeFieldHeat(v: unknown): FieldHeatOpts {
+  const p = (v ?? {}) as Partial<FieldHeatOpts>;
+  return {
+    metric: p.metric === "p5" || p.metric === "oos_pct" ? p.metric : "p50",
+    measure: p.measure === "nr_ss_rsrp" ? "nr_ss_rsrp" : "lte_rsrp",
+    operator: typeof p.operator === "string" ? p.operator : null,
+    window: p.window === "24h" || p.window === "30d" ? p.window : "7d",
+  };
+}

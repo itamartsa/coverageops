@@ -10,6 +10,7 @@ import {
 } from "../lib/cellSites";
 import { levelColor, levelHe, fmtDb, fmtKm } from "../lib/link";
 import { canWrite } from "../lib/roles";
+import { BASE_MAP_IDS, makeBaseLayer } from "../lib/baseMaps";
 import { fmtDbm } from "../services/coverageFormat";
 import styles from "./MapView.module.css";
 
@@ -113,34 +114,10 @@ export default function MapView() {
   useEffect(() => {
     if (mapRef.current || !mapElRef.current) return;
 
-    const mkTile = (url: string, opts = {}) => L.tileLayer(url, opts);
-
-    const layers: Record<string, L.TileLayer> = {
-      "esri-street": mkTile(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "© Esri © OpenStreetMap", maxZoom: 20 }
-      ),
-      "esri-gray": mkTile(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "© Esri © OpenStreetMap", maxZoom: 16 }
-      ),
-      "stadia-dark": mkTile(
-        "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png",
-        { attribution: "© Stadia Maps © OpenMapTiles © OpenStreetMap", maxZoom: 20 }
-      ),
-      "stadia-osm": mkTile(
-        "https://tiles.stadiamaps.com/tiles/osm_bright/{z}/{x}/{y}{r}.png",
-        { attribution: "© Stadia Maps © OpenMapTiles © OpenStreetMap", maxZoom: 20 }
-      ),
-      "topo": mkTile(
-        "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        { attribution: "© OpenTopoMap", maxZoom: 17 }
-      ),
-      "satellite": mkTile(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "© Esri World Imagery", maxZoom: 18 }
-      ),
-    };
+    // Tile catalogue shared with the field-reception map (lib/baseMaps.ts)
+    const layers: Record<string, L.TileLayer> = Object.fromEntries(
+      BASE_MAP_IDS.map((id) => [id, makeBaseLayer(id)]),
+    );
 
     Object.entries(layers).forEach(([id, layer]) => baseLayersRef.current.set(id, layer));
 

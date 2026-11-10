@@ -20,6 +20,10 @@
   --cov-medium:    #ffe600;
   --cov-weak:      #ff8c00;
   --cov-marginal:  #ff3b5c;
+  /* Field reception: "unclassified" tier (grey, outside the 5 tiers) */
+  --cov-unk:       #5a7a9a;
+  /* Secondary small text: --text-dim is ≈3.9:1 on --panel, this one ≈6.1:1 (WCAG AA) */
+  --muted-ink:     #7f9bb8;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
