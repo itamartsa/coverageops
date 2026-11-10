@@ -167,7 +167,7 @@ ${dqSim ? `<p style="color:#856404;background:#fff3cd;border:1px solid #ffc107;p
 </head>
 <body>
 <h1>📡 דוח ניתוח כיסוי סלולרי</h1>
-<div class="subtitle">הופק ב-${new Date().toLocaleString("he-IL")} | CoverageOps</div>
+<div class="subtitle">הופק ב-${new Date().toLocaleString("he-IL")} | COVIRADYX</div>
 
 <h2 style="background:#1a1a2e;">0. סיכום מבצעי – Executive Summary</h2>
 ${execSummaryHTML}

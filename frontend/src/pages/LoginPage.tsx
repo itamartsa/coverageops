@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { authApi } from "../services/api";
 import { useStore } from "../store/useStore";
 import styles from "./LoginPage.module.css";
+import { BrandLogo } from "../components/Brand";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -34,17 +35,19 @@ export default function LoginPage() {
   return (
     <div className={styles.screen}>
       <div className={styles.box}>
-        <div className={styles.logo}>Coverage<span>Ops</span></div>
-        <div className={styles.sub}>מערכת ניתוח כיסוי סלולרי מבצעי</div>
+        <h1 className={styles.logo}><BrandLogo width={332} /></h1>
+        <p className={styles.sub}>מערכת ניתוח כיסוי סלולרי מבצעי</p>
 
-        {error && <div className={styles.error}>{error}</div>}
+        {error && <div className={styles.error} role="alert">{error}</div>}
 
         <form onSubmit={handleLogin}>
           <div className={styles.fieldGroup}>
-            <label className={styles.label}>שם משתמש</label>
+            <label className={styles.label} htmlFor="login-user">שם משתמש</label>
             <input
+              id="login-user"
               className={styles.input}
               type="text"
+              autoComplete="username"
               value={username}
               onChange={e => setUsername(e.target.value)}
               placeholder="הקלד שם משתמש"
@@ -53,10 +56,12 @@ export default function LoginPage() {
             />
           </div>
           <div className={styles.fieldGroup}>
-            <label className={styles.label}>סיסמה</label>
+            <label className={styles.label} htmlFor="login-pass">סיסמה</label>
             <input
+              id="login-pass"
               className={styles.input}
               type="password"
+              autoComplete="current-password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -67,10 +72,6 @@ export default function LoginPage() {
             {loading ? "מתחבר..." : "כניסה למערכת"}
           </button>
         </form>
-
-        <div className={styles.hint}>
-          ברירת מחדל: adminuser / 12345678
-        </div>
       </div>
     </div>
   );

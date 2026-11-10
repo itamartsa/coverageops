@@ -1,8 +1,8 @@
-# תיעוד טכני — CoverageOps
+# תיעוד טכני — COVIRADYX (לשעבר CoverageOps)
 
 ## סקירה כללית
 
-CoverageOps היא מערכת ניתוח כיסוי רדיו מבצעי המורכבת מ:
+COVIRADYX היא מערכת ניתוח כיסוי רדיו מבצעי המורכבת מ:
 
 - **Backend** — FastAPI + PostgreSQL + SQLAlchemy 2
 - **Frontend** — React 18 + TypeScript + Zustand + React Query + Leaflet
@@ -481,7 +481,7 @@ FSPL = 20·log₁₀(d_m) + 20·log₁₀(f_Hz) − 147.55
 
 ## קליטה בשטח (Field reception) — `/api/field`
 
-מודול ניטור קליטה ממכשירי שטח (אפליקציית CoverageOps Field Probe). מסמכים מחייבים:
+מודול ניטור קליטה ממכשירי שטח (אפליקציית COVIRADYX Field Probe). מסמכים מחייבים:
 `docs/field/API_CONTRACT.md` (כולל "גרסה 2" ו-"גרסה 2.1" שגוברות), `docs/field/FIELD_DASHBOARD_SPEC.md`,
 `docs/field/ANDROID_APP_SPEC.md`. ממומש בצד שרת: אבני דרך M1, צד השרת של M2, ו-M3.
 **לא ממומש (שלבים מאוחרים):** נמדד-מול-חזוי וכיול (M4: `/compare`, `/calibration`, `/cell-site-map`),

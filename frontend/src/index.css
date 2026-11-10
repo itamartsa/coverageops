@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=IBM+Plex+Sans+Hebrew:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Rajdhani:wght@400;600;700&family=IBM+Plex+Sans+Hebrew:wght@300;400;500;600&display=swap');
 
 :root {
   --bg:       #0a0e14;
@@ -6,11 +6,16 @@
   --bg3:      #151d2e;
   --panel:    #111928;
   --border:   #1e2d45;
-  --accent:   #00d4ff;
+  --accent:   #00d4ff;            /* action color (= COVIRADYX cyan #01dafd) */
   --accent2:  #00ff88;
+  /* COVIRADYX brand orange (sampled from the logo) — identity only: wordmark,
+     brand accents, admin entry. Actions stay cyan; coverage tiers keep their own scale. */
+  --brand:      #ffa30a;
+  --brand-soft: rgba(255,163,10,0.12);
+  --brand-line: rgba(255,163,10,0.38);
   --accent3:  #ff6b35;
   --text:     #c8d8e8;
-  --text-dim: #5a7a9a;
+  --text-dim: #7b97b4;            /* ≥5.5:1 on --bg / --panel / --bg3 (was #5a7a9a ≈3.9:1) */
   --text-bright: #eaf4ff;
   --danger:   #ff3b5c;
   --warn:     #ffb347;
@@ -22,8 +27,9 @@
   --cov-marginal:  #ff3b5c;
   /* Field reception: "unclassified" tier (grey, outside the 5 tiers) */
   --cov-unk:       #5a7a9a;
-  /* Secondary small text: --text-dim is ≈3.9:1 on --panel, this one ≈6.1:1 (WCAG AA) */
+  /* Secondary small text (≈6.1:1 on --panel) */
   --muted-ink:     #7f9bb8;
+  --focus-ring:    0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -42,6 +48,23 @@ html, body, #root {
   font-family: 'IBM Plex Sans Hebrew', sans-serif;
   direction: rtl;
 }
+
+/* Browser surfaces in the palette */
+::selection { background: rgba(0,212,255,0.28); color: var(--text-bright); }
+input, textarea { caret-color: var(--accent); }
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* COVIRADYX wordmark (text form, used next to the logo mark) */
+.wordmark {
+  font-family: 'Montserrat', 'Rajdhani', sans-serif;
+  font-weight: 700; letter-spacing: 0.02em;
+  color: var(--text-bright); direction: ltr; unicode-bidi: isolate;
+  white-space: nowrap; line-height: 1;
+}
+.wordmark b { color: var(--brand); font-weight: 700; }
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 4px; }

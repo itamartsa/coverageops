@@ -192,7 +192,7 @@ def generate_cross_section_docx(
     r1.bold           = True
     r1.font.size      = Pt(22)
     r1.font.color.rgb = WHITE
-    r2 = title_para.add_run("ניתוח כיסוי ציר תנועה  |  CoverageOps")
+    r2 = title_para.add_run("ניתוח כיסוי ציר תנועה  |  COVIRADYX")
     r2.font.size      = Pt(11)
     r2.font.color.rgb = RGBColor(0xA0, 0xC4, 0xFF)
     doc.add_paragraph()
@@ -409,7 +409,7 @@ def generate_cross_section_docx(
     footer_tbl = doc.add_table(rows=1, cols=1)
     _shade_cell(footer_tbl.rows[0].cells[0], "0F294D")
     _cell_text(footer_tbl.rows[0].cells[0],
-               f"הופק על ידי CoverageOps  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  מסמך פנימי",
+               f"הופק על ידי COVIRADYX  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  מסמך פנימי",
                size_pt=9, align=WD_ALIGN_PARAGRAPH.CENTER, color=RGBColor(0xA0, 0xC4, 0xFF))
 
     buf = io.BytesIO()
@@ -545,7 +545,7 @@ def generate_link_docx(data: dict) -> bytes:
     _rtl_para(tp)
     r1 = tp.add_run("דוח קישור נקודתי\n")
     r1.bold, r1.font.size, r1.font.color.rgb = True, Pt(22), WHITE
-    r2 = tp.add_run("תקציב קישור משדר ← נקודת קליטה  |  CoverageOps")
+    r2 = tp.add_run("תקציב קישור משדר ← נקודת קליטה  |  COVIRADYX")
     r2.font.size, r2.font.color.rgb = Pt(11), RGBColor(0xA0, 0xC4, 0xFF)
     doc.add_paragraph()
 
@@ -698,7 +698,7 @@ def generate_link_docx(data: dict) -> bytes:
     footer = doc.add_table(rows=1, cols=1)
     _shade_cell(footer.rows[0].cells[0], "0F294D")
     _cell_text(footer.rows[0].cells[0],
-               f"הופק על ידי CoverageOps  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  מסמך פנימי",
+               f"הופק על ידי COVIRADYX  |  {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  מסמך פנימי",
                size_pt=9, align=WD_ALIGN_PARAGRAPH.CENTER, color=RGBColor(0xA0, 0xC4, 0xFF))
 
     buf = io.BytesIO()

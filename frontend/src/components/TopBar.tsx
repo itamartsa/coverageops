@@ -3,6 +3,7 @@ import { useStore } from "../store/useStore";
 import { canSeeDevices } from "../lib/roles";
 import { badgeCount, useOpenAlerts } from "../lib/fieldQueries";
 import styles from "./TopBar.module.css";
+import { BrandMark } from "./Brand";
 
 export default function TopBar() {
   const { user, logout } = useStore();
@@ -21,7 +22,9 @@ export default function TopBar() {
 
   return (
     <header className={styles.bar}>
-      <div className={styles.logo}>Coverage<span>Ops</span></div>
+      <button className={styles.logo} onClick={() => navigate("/")} title="מפת הכיסוי">
+        <BrandMark size={30} />
+      </button>
       <div className={styles.sep} />
       <div className={styles.status}>
         <span className={styles.dot} />

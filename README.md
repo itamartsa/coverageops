@@ -1,4 +1,6 @@
-# 📡 CoverageOps
+# COVIRADYX
+
+> Mission-Critical Connectivity Intelligence — (שם קודם: CoverageOps; שם הריפו והשירותים נשאר `coverageops`)
 
 **מערכת ניתוח כיסוי סלולרי מבצעי**  
 Web SaaS לקציני קשר – ניתוח כיסוי אות מאתר אנטנה לתא שטח, עם תמיכה בטופוגרפיה ותכסית מבנים.

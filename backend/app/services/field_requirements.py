@@ -11,7 +11,7 @@ VERIFIED = "מאומת באפיון"
 TO_VERIFY = "לאימות"
 
 DEVICE_REQUIREMENTS = {
-    "title_he": "דרישות מערכת למכשיר קצה — אפליקציית CoverageOps Field Probe",
+    "title_he": "דרישות מערכת למכשיר קצה — אפליקציית COVIRADYX Field Probe",
     "headline_he": "Android 11 (API 30) ומעלה",
     "spec_document": "docs/field/ANDROID_APP_SPEC.md",
     "status_legend_he": {
@@ -90,7 +90,7 @@ DEVICE_REQUIREMENTS = {
             "key": "connectivity",
             "title_he": "קישוריות",
             "items": [
-                {"text_he": "חיבור HTTPS (TLS 1.2+) לשרת CoverageOps; כתובות שאינן https נדחות בגרסת production.",
+                {"text_he": "חיבור HTTPS (TLS 1.2+) לשרת COVIRADYX; כתובות שאינן https נדחות בגרסת production.",
                  "status": VERIFIED, "source": "7.1, 9.1"},
                 {"text_he": "שירותי המיקום של המערכת דלוקים.", "status": VERIFIED, "source": "3.1, 5.2"},
                 {"text_he": "האם בדיקת \"שירותי מיקום דלוקים\" מתנהגת זהה בכל הגרסאות.",

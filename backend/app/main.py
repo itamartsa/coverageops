@@ -90,7 +90,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="CoverageOps API",
+    title="COVIRADYX API",
     description="מערכת ניתוח כיסוי סלולרי מבצעי",
     version="1.0.0",
     docs_url="/api/docs",

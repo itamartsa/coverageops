@@ -1,4 +1,4 @@
-# בדיקות קצה-לקצה (E2E) — CoverageOps
+# בדיקות קצה-לקצה (E2E) — COVIRADYX
 
 חבילת בדיקות [Playwright](https://playwright.dev) שמפעילה את המערכת המלאה — שרת FastAPI
 (עם מסד SQLite זמני) ושרת הפיתוח של Vite — ומריצה את ממשק המשתמש האמיתי בדפדפן Chromium.

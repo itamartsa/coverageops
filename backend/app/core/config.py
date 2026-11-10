@@ -4,7 +4,7 @@ from typing import List
 
 class Settings(BaseSettings):
     # ── App ──────────────────────────────────────────────────────────────────
-    APP_NAME: str = "CoverageOps"
+    APP_NAME: str = "COVIRADYX"
     SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION-USE-LONG-RANDOM-STRING"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours for field use

@@ -5,6 +5,7 @@ import { usersApi, UserOut, deviceProfilesApi, apiErrorText } from "../services/
 import type { DeviceProfile, DeviceProfileIn } from "../services/api";
 import { useStore } from "../store/useStore";
 import styles from "./AdminPage.module.css";
+import { BrandMark } from "../components/Brand";
 
 type Role = "ADMIN" | "OPERATOR" | "VIEWER";
 
@@ -15,9 +16,9 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 
 const ROLE_COLORS: Record<Role, string> = {
-  ADMIN: "#f59e0b",
-  OPERATOR: "#3b82f6",
-  VIEWER: "#6b7280",
+  ADMIN: "#ffa30a",     // --brand
+  OPERATOR: "#00d4ff",  // --accent
+  VIEWER: "#7b97b4",    // --text-dim
 };
 
 // ── Modal: Create User ───────────────────────────────────────────────────────
@@ -491,7 +492,7 @@ export default function AdminPage() {
             ← חזרה לאפליקציה
           </button>
           <div className={styles.title}>
-            <span className={styles.logo}>Coverage<span>Ops</span></span>
+            <BrandMark size={28} className={styles.logo} />
             <span className={styles.pageName}>ניהול משתמשים</span>
           </div>
         </div>
@@ -512,15 +513,15 @@ export default function AdminPage() {
             <div className={styles.statLabel}>סה"כ משתמשים</div>
           </div>
           <div className={styles.statCard}>
-            <div className={styles.statNum} style={{ color: "#00ff88" }}>{stats.active}</div>
+            <div className={styles.statNum} style={{ color: "var(--accent2)" }}>{stats.active}</div>
             <div className={styles.statLabel}>פעילים</div>
           </div>
           <div className={styles.statCard}>
-            <div className={styles.statNum} style={{ color: "#f59e0b" }}>{stats.admins}</div>
+            <div className={styles.statNum} style={{ color: "var(--brand)" }}>{stats.admins}</div>
             <div className={styles.statLabel}>מנהלים</div>
           </div>
           <div className={styles.statCard}>
-            <div className={styles.statNum} style={{ color: "#3b82f6" }}>{stats.operators}</div>
+            <div className={styles.statNum} style={{ color: "var(--accent)" }}>{stats.operators}</div>
             <div className={styles.statLabel}>מפעילים</div>
           </div>
         </div>

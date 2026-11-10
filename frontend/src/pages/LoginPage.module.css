@@ -1,69 +1,70 @@
 .screen {
   min-height: 100vh;
   display: flex; align-items: center; justify-content: center;
+  padding: 24px 16px;
   background: var(--bg);
   background-image:
-    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0,212,255,0.08) 0%, transparent 70%),
-    repeating-linear-gradient(0deg,  transparent, transparent 39px, rgba(0,212,255,0.04) 40px),
-    repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(0,212,255,0.04) 40px);
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(0,212,255,0.09) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 40% at 50% 100%, rgba(255,163,10,0.05) 0%, transparent 70%),
+    repeating-linear-gradient(0deg,  transparent, transparent 39px, rgba(0,212,255,0.035) 40px),
+    repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(0,212,255,0.035) 40px);
 }
 
 .box {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-top: 2px solid var(--accent);
-  padding: 48px 44px;
-  width: 420px;
-  box-shadow: 0 0 60px rgba(0,212,255,0.1), 0 20px 60px rgba(0,0,0,0.6);
-  animation: slideIn 0.4s ease;
+  border-radius: 6px;
+  padding: 40px 40px 36px;
+  width: 100%; max-width: 420px;
+  box-shadow: 0 24px 60px -12px rgba(0,0,0,0.65), 0 2px 0 0 rgba(0,212,255,0.6) inset;
+  animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1);
 }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .box { animation: none; } }
 
-.logo {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 30px; font-weight: 700;
-  color: var(--accent); letter-spacing: 4px;
-  text-transform: uppercase; margin-bottom: 4px;
-}
-.logo span { color: var(--accent2); }
+.logo { margin: 0 0 14px; display: flex; justify-content: center; }
 
 .sub {
-  font-size: 11px; color: var(--text-dim);
-  letter-spacing: 2px; text-transform: uppercase;
-  margin-bottom: 36px;
+  font-size: 13px; color: var(--text-dim);
+  text-align: center;
+  margin: 0 0 32px;
 }
 
 .error {
   background: rgba(255,59,92,0.1); border: 1px solid var(--danger);
-  color: var(--danger); padding: 10px 12px; font-size: 12px;
+  border-radius: 4px;
+  color: var(--danger); padding: 10px 12px; font-size: 13px;
   margin-bottom: 16px;
 }
 
 .fieldGroup { margin-bottom: 18px; }
 
 .label {
-  display: block; font-size: 10px; letter-spacing: 2px;
-  text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px;
+  display: block; font-size: 12px; font-weight: 500;
+  color: var(--text); margin-bottom: 6px;
 }
 
 .input {
   width: 100%; padding: 11px 14px;
-  background: var(--bg2); border: 1px solid var(--border);
-  color: var(--text-bright); font-family: inherit; font-size: 14px;
-  outline: none; transition: border-color .2s;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-bright); font-family: inherit; font-size: 15px;
+  outline: none; transition: border-color .2s, box-shadow .2s;
 }
-.input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1); }
+.input::placeholder { color: var(--text-dim); }
+.input:focus-visible, .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,212,255,0.16); outline: none; }
 
 .btn {
-  width: 100%; padding: 13px;
-  background: var(--accent); border: none;
-  color: #000; font-family: 'Rajdhani', sans-serif;
-  font-size: 15px; font-weight: 700; letter-spacing: 2px;
-  text-transform: uppercase; cursor: pointer; transition: all .2s;
+  width: 100%; padding: 13px; margin-top: 6px;
+  background: var(--accent); border: none; border-radius: 4px;
+  color: #001018; font-family: inherit;
+  font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: background .2s, box-shadow .2s, transform .1s;
 }
-.btn:hover:not(:disabled) { background: #33dfff; box-shadow: 0 0 20px rgba(0,212,255,0.4); }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn:hover:not(:disabled) { background: #33dfff; box-shadow: 0 6px 20px -6px rgba(0,212,255,0.55); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:focus-visible { outline: 2px solid var(--text-bright); outline-offset: 2px; }
+.btn:disabled { opacity: 0.6; cursor: progress; }
 
-.hint {
-  margin-top: 14px; font-size: 11px;
-  color: var(--text-dim); text-align: center;
+@media (max-width: 480px) {
+  .box { padding: 32px 22px 28px; }
 }
