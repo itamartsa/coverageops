@@ -1,0 +1,17 @@
+/* Hand-rolled SVG charts — LTR plot area inside the RTL page (spec 8.5) */
+.wrap { min-width: 0; }
+.chart { display: block; max-width: 100%; height: auto; direction: ltr; overflow: visible; }
+.ax { font-size: 10px; fill: #8aa6c1; font-family: 'Rajdhani', sans-serif; }
+.axTitle { font-size: 10.5px; fill: #8aa6c1; }
+.axTier { font-size: 10px; font-weight: 600; }
+.axWarn { font-size: 10px; fill: #ff8fa3; }
+.axHi { font-size: 11px; fill: #eaf4ff; font-family: 'Rajdhani', sans-serif; font-weight: 700; }
+.axOp { font-size: 12px; fill: #c8d8e8; }
+.seg { font-size: 11px; fill: #0a0e14; font-weight: 700; font-family: 'Rajdhani', sans-serif; }
+.grid { stroke: #1e2d45; stroke-dasharray: 2 3; }
+.axis { stroke: #2a3d5a; }
+.keys { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--muted-ink); margin: 6px 0 4px; }
+.keys li { display: inline-flex; align-items: center; gap: 5px; }
+.keyLine { width: 16px; height: 2px; background: var(--accent); display: inline-block; }
+.keyArea { width: 14px; height: 10px; background: rgba(0,212,255,.25); display: inline-block; }
+.keyGap { width: 14px; height: 10px; display: inline-block; border: 1px solid rgba(127,155,184,.5); }

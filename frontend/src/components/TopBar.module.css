@@ -77,3 +77,30 @@
 .logoutBtn:hover {
   border-color: var(--danger); color: var(--danger);
 }
+
+/* ── Field reception entry (spec 8.1) ───────────────────────────────────── */
+.navBtn {
+  background: none; border: 1px solid var(--border); color: var(--text);
+  padding: 5px 12px; font-family: inherit; font-size: 11px; letter-spacing: 1px;
+  border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; transition: all .2s;
+}
+.navBtn:hover { border-color: var(--accent); color: var(--accent); }
+.navBtnActive { background: rgba(0,212,255,.1); border-color: rgba(0,212,255,.5); color: var(--accent); }
+.navBtn:focus-visible, .adminBtn:focus-visible, .logoutBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.alertBadge {
+  background: var(--danger); color: #fff; border-radius: 9px;
+  font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 11px;
+  padding: 0 6px; line-height: 16px; letter-spacing: 0;
+}
+.lbl { display: inline; }
+.userText { display: block; }
+
+@media (max-width: 760px) {
+  .bar { padding: 0 10px; gap: 8px; }
+  .status, .sep, .userText, .lbl, .avatar { display: none; }
+  .logo { font-size: 15px; letter-spacing: 1px; }
+  .spacer { min-width: 0; }
+  .navBtn, .adminBtn { padding: 5px 8px; }
+  .logoutBtn { padding: 5px 8px; white-space: nowrap; }
+}

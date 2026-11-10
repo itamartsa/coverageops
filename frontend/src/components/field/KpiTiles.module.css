@@ -1,0 +1,19 @@
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.kpi {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.l { font-size: 11px; color: var(--muted-ink); }
+.v {
+  font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 28px; color: var(--text-bright);
+  line-height: 1.1; display: flex; gap: 2px; align-items: baseline; direction: ltr; justify-content: flex-end;
+}
+.v small { font-size: 14px; color: var(--muted-ink); font-weight: 600; }
+.d { font-size: 11px; color: var(--muted-ink); }
+.kpiAlert { border-color: rgba(255,59,92,.45); }
+.crit { color: #ff8fa3; }
+.tiers { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; margin-top: 4px; direction: ltr; }
+@media (max-width: 760px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .v { font-size: 24px; }
+}
