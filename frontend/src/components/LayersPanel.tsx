@@ -4,6 +4,7 @@ import type { BaseMapId, MapLayer } from "../store/useStore";
 import { fmtCoveredVsThreshold, demStatus, isLegacyThreshold } from "../services/coverageFormat";
 import styles from "./LayersPanel.module.css";
 import CellSitesInfo from "./CellSitesInfo";
+import FieldHeatInfo from "./FieldHeatInfo";
 
 // ── Base-map catalogue ────────────────────────────────────────────────────────
 const BASE_MAPS: { id: BaseMapId; label: string; icon: string; desc: string }[] = [
@@ -19,11 +20,19 @@ const LAYER_ICONS: Record<string, string> = {
   cellular: "📡",
   dem:      "🏔️",
   coverage: "🔲",
+  field:    "📶",
 };
 
 const LAYER_DESCS: Record<string, string> = {
   cellsites: "כל האתרים האזרחיים — המשרד להגנת הסביבה (data.gov.il)",
   dem:      "שכבת גבהים דינמית (DEM)",
+  fieldheat: "מדידות אמת ממכשירי שטח · RSRP (נמדד, לא חזוי)",
+};
+
+/** System layers that have an ⓘ info/options panel */
+const INFO_PANELS: Record<string, () => JSX.Element> = {
+  cellsites: () => <CellSitesInfo />,
+  fieldheat: () => <FieldHeatInfo />,
 };
 
 export default function LayersPanel() {
@@ -91,7 +100,7 @@ export default function LayersPanel() {
             <div className={styles.layerName}>{layer.name}</div>
             <div className={styles.layerDesc}>{LAYER_DESCS[layer.id] ?? ""}</div>
           </div>
-          {layer.id === "cellsites" && (
+          {INFO_PANELS[layer.id] && (
             <button
               className={`${styles.infoBtn} ${isInfoOpen(layer) ? styles.infoBtnOn : ""}`}
               onClick={() => setInfoOpen(isInfoOpen(layer) ? "closed" : layer.id)}
@@ -99,9 +108,7 @@ export default function LayersPanel() {
             >ⓘ</button>
           )}
         </div>
-        {layer.id === "cellsites" && isInfoOpen(layer) && (
-          <CellSitesInfo />
-        )}
+        {INFO_PANELS[layer.id] && isInfoOpen(layer) && INFO_PANELS[layer.id]()}
         </div>
       ))}
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
@@ -11,6 +11,11 @@ import {
 import { levelColor, levelHe, fmtDb, fmtKm } from "../lib/link";
 import { canWrite } from "../lib/roles";
 import { BASE_MAP_IDS, makeBaseLayer } from "../lib/baseMaps";
+import { fieldApi } from "../services/api";
+import { HeatGridLayer, LEVEL_TEXT_HE, bboxParam, heatLevelForZoom } from "../lib/heatGridLayer";
+import { windowRange } from "../lib/fieldQueries";
+import { TIER_ORDER, barsSvg, tierDef, tierRangeText } from "../lib/fieldTiers";
+import "./field/field-global.css";
 import { fmtDbm } from "../services/coverageFormat";
 import styles from "./MapView.module.css";
 
@@ -105,7 +110,7 @@ export default function MapView() {
     selectedSiteIds, routeWaypoints,
     crossSectionResult, crossSectionSiteId, linkTransmitter, mapFitRequest,
     activeBaseMapId, mapLayers,
-    cellSiteFilter, cellSitesVersion,
+    cellSiteFilter, cellSitesVersion, fieldHeatOpts,
     linkReceiver, linkResult, bestServersResult, highlightedServerId, linkSubMode,
     linkPickTransmitter, setLinkPickTransmitter,
   } = useStore();
@@ -403,6 +408,53 @@ export default function MapView() {
     })();
     return () => { cancelled = true; };
   }, [cellSitesVisible, cellSiteFilter, cellSitesVersion]);
+
+  // ── Field measurements heat map ("מדידות שטח", /api/field/heatmap) ──────────
+  // Same imperative pattern as the cell-sites layer. Re-fetched for the visible area on
+  // pan/zoom; the resolution follows the zoom (100 m / 500 m / 2.5 km). MEASURED RSRP — it has
+  // its own legend, separate from the predicted-coverage (RSSI) legend.
+  const fieldHeatVisible = mapLayers.find((l) => l.id === "fieldheat")?.visible ?? false;
+  const fieldHeatRef = useRef<HeatGridLayer | null>(null);
+  const [fieldHeatMeta, setFieldHeatMeta] = useState<
+    { level: number; cells: number; suppressed: number; coarse: boolean; error?: string } | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!fieldHeatVisible) {
+      if (fieldHeatRef.current) { map.removeLayer(fieldHeatRef.current); fieldHeatRef.current = null; }
+      setFieldHeatMeta(null);
+      return;
+    }
+    let cancelled = false;
+    let seq = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const o = fieldHeatOpts;
+    const measureLabel = o.measure === "lte_rsrp" ? "RSRP LTE" : "SS-RSRP NR";
+    async function load() {
+      const m = mapRef.current;
+      if (!m) return;
+      const my = ++seq;
+      const level = heatLevelForZoom(m.getZoom());
+      try {
+        const r = await fieldApi.heatmap({
+          ...windowRange(o.window), bbox: bboxParam(m.getBounds().pad(0.1)), measure: o.measure,
+          metric: o.metric, level, operator: o.operator,
+        });
+        if (cancelled || my !== seq) return;
+        const data = { cells: r.cells, cellDeg: r.cell_deg, metric: r.metric, measureLabel };
+        if (fieldHeatRef.current) fieldHeatRef.current.setData(data);
+        else fieldHeatRef.current = new HeatGridLayer(data, { opacity: 0.5 }).addTo(m);
+        setFieldHeatMeta({ level: r.level, cells: r.cells.length, suppressed: r.suppressed, coarse: r.includes_coarse });
+      } catch (e) {
+        if (cancelled || my !== seq) return;
+        setFieldHeatMeta({ level, cells: 0, suppressed: 0, coarse: false, error: apiErrorText(e, "שגיאה בטעינת מדידות השטח") });
+      }
+    }
+    const onMove = () => { if (timer) clearTimeout(timer); timer = setTimeout(load, 350); };
+    load();
+    map.on("moveend", onMove);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); map.off("moveend", onMove); };
+  }, [fieldHeatVisible, fieldHeatOpts]);
 
   // ── Cell-site popup: inline height / RF editors + actions (one delegated listener) ──
   // The popup is an HTML string, so its buttons are wired here: on every popupopen
@@ -1213,6 +1265,32 @@ export default function MapView() {
       )}
 
       {/* DEM / base-map controls moved to 🗂 שכבות tab */}
+
+      {/* Field measurements legend — MEASURED RSRP, kept apart from the predicted (RSSI) legend */}
+      {fieldHeatVisible && (
+        <div className={styles.fieldLegend} data-testid="field-heat-legend" aria-label="מקרא מדידות שטח">
+          <div className={styles.fieldLegendH}>
+            📶 מדידות שטח · {fieldHeatOpts.measure === "lte_rsrp" ? "RSRP LTE" : "SS-RSRP NR"} dBm
+            <span className={styles.fieldLegendTag}>נמדד</span>
+          </div>
+          {fieldHeatOpts.metric === "oos_pct" ? (
+            <div className={styles.fieldLegendRow}><span className={styles.fieldLegendSw}
+              style={{ background: "linear-gradient(90deg, rgba(255,59,92,.15), rgba(255,59,92,.85))", width: 40 }} /> % זמן ללא שירות 0→100</div>
+          ) : TIER_ORDER.map((t) => (
+            <div key={t} className={styles.fieldLegendRow}>
+              <span className={styles.fieldLegendSw} style={{ background: tierDef(t).color }}
+                dangerouslySetInnerHTML={{ __html: barsSvg(tierDef(t).bars, { size: 10, fill: "#0a0e14", dim: "rgba(10,14,20,.6)" }) }} />
+              {tierDef(t).label_he} <bdi dir="ltr">{tierRangeText(t)}</bdi>
+            </div>
+          ))}
+          <div className={styles.fieldLegendNote}>
+            {fieldHeatMeta?.error ? `⚠ ${fieldHeatMeta.error}`
+              : fieldHeatMeta ? `${LEVEL_TEXT_HE[fieldHeatMeta.level]} · ${fieldHeatMeta.cells} תאים${fieldHeatMeta.suppressed ? ` · ${fieldHeatMeta.suppressed} הוסתרו (פחות מ-3 מכשירים)` : ""}${fieldHeatMeta.coarse ? " · כולל מיקום משוער" : ""}`
+              : "טוען…"}
+          </div>
+          <div className={styles.fieldLegendNote}>שונה ממקרא החיזוי (RSSI) של ניתוחי הכיסוי</div>
+        </div>
+      )}
 
       {/* Coords */}
       <div id="coord-display" className={styles.coords}>

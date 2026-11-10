@@ -97,3 +97,19 @@
   from { transform: scale(1);   opacity: 1; }
   to   { transform: scale(2.6); opacity: 0; }
 }
+
+/* ── Field measurements legend (separate from the predicted-coverage RSSI legend) ── */
+.fieldLegend {
+  position: absolute; bottom: 56px; right: 12px; z-index: 500; direction: rtl;
+  background: rgba(11,18,28,0.92); border: 1px solid var(--border); border-top: 2px solid var(--accent2);
+  padding: 8px 10px; font-size: 11px; color: var(--text); min-width: 190px; max-width: 260px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.45);
+}
+.fieldLegendH { font-weight: 600; color: var(--text-bright); margin-bottom: 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.fieldLegendTag {
+  font-size: 9.5px; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 3px; padding: 0 4px;
+}
+.fieldLegendRow { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.fieldLegendRow bdi { font-family: 'Rajdhani', sans-serif; font-weight: 600; }
+.fieldLegendSw { width: 16px; height: 12px; display: inline-flex; align-items: center; justify-content: center; opacity: .9; }
+.fieldLegendNote { font-size: 10px; color: var(--muted-ink); margin-top: 4px; }
