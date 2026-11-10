@@ -84,3 +84,16 @@
   border-color: #1e90ff;
   color: #1e90ff;
 }
+
+/* "🎯 מיקוד": brief pulse ring around the focused site marker (added to .leaflet-marker-icon) */
+.focusPulse::after {
+  content: ''; position: absolute;
+  left: 0; top: 0; width: 32px; height: 32px;       /* the 32×32 hexagon of the 32×42 icon */
+  border: 3px solid var(--accent2); border-radius: 50%;
+  box-sizing: border-box; pointer-events: none;
+  animation: focusRing .7s ease-out 3;
+}
+@keyframes focusRing {
+  from { transform: scale(1);   opacity: 1; }
+  to   { transform: scale(2.6); opacity: 0; }
+}

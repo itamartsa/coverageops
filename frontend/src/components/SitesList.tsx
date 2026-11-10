@@ -14,7 +14,7 @@ const FREQ_COLORS: Record<number, string> = {
 export default function SitesList() {
   const { sites, activeSiteId, setActiveSite, removeSite, setEditingSite,
           setDrawMode, setActiveTab, setBbox, setCoverageResult,
-          setSelectedSiteIds, user } = useStore();
+          setSelectedSiteIds, focusedSiteId, toggleFocusedSite, user } = useStore();
   const writable = canWrite(user?.role);
   const qc = useQueryClient();
 
@@ -47,10 +47,12 @@ export default function SitesList() {
     <div>
       <div className={styles.sectionHeader}>אתרים פעילים</div>
 
-      {sites.map((site) => (
+      {sites.map((site) => {
+        const focused = site.id === focusedSiteId;
+        return (
         <div
           key={site.id}
-          className={`${styles.card} ${site.id === activeSiteId ? styles.active : ""}`}
+          className={`${styles.card} ${site.id === activeSiteId ? styles.active : ""} ${focused ? styles.focused : ""}`}
           onClick={() => setActiveSite(site.id)}
         >
           <span
@@ -83,7 +85,19 @@ export default function SitesList() {
             ⚡ {site.tx_power} dBm &nbsp;|&nbsp; 📶 {site.rx_threshold} dBm
           </div>
           {site.notes && <div className={styles.notes}>{site.notes}</div>}
-          {writable && <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+          <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+            {/* Focus: every role (VIEWER included) — pins the marker on the map in every tab */}
+            <button
+              type="button"
+              className={`${styles.focusBtn} ${focused ? styles.focusBtnOn : ""}`}
+              title="מיקוד על האתר במפה"
+              aria-label="מיקוד על האתר במפה"
+              aria-pressed={focused}
+              onClick={(e) => { e.stopPropagation(); toggleFocusedSite(site.id); }}
+            >
+              🎯 {focused ? "ממוקד" : "מיקוד"}
+            </button>
+            {writable && <>
             <button
               className={styles.editBtn}
               onClick={(e) => { 
@@ -102,9 +116,11 @@ export default function SitesList() {
             >
               ✕ מחק
             </button>
-          </div>}
+            </>}
+          </div>
         </div>
-      ))}
+        );
+      })}
 
     </div>
   );

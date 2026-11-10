@@ -14,3 +14,8 @@ export function fieldByLabel(scope: Page | Locator, label: string): Locator {
 export function card(page: Page, text: string | RegExp): Locator {
   return page.locator("aside [class*='_card_']").filter({ hasText: text });
 }
+
+/** Sites-list "🎯 מיקוד" button of the card containing `text` (aria-label is constant; state = aria-pressed). */
+export function focusButton(page: Page, text: string | RegExp): Locator {
+  return card(page, text).getByRole("button", { name: "מיקוד על האתר במפה" });
+}

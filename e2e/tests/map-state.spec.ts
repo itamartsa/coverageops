@@ -9,7 +9,7 @@ import {
   JERUSALEM_BBOX, clearResultsButton, prepareAnalysis, resultBlock, runAndWait, runRow, siteCheckbox,
 } from "../support/analysis";
 import { showCellSitesLayer } from "../support/cellsites";
-import { card } from "../support/form";
+import { card, focusButton } from "../support/form";
 import { loadFromHistory } from "../support/history";
 import {
   bboxHandle, bboxRect, cellSiteMarkerCount, coverageOverlays, imageOverlays, losLines, setView,
@@ -125,12 +125,16 @@ test.describe("מצב המפה: פתיחה נקייה, סמני אתרים בה�
     await expect(siteMarkers(page, site.id)).toHaveCount(0);
   });
 
-  test("(d) ניתוח → סמן + תא שטח + כיסוי; \"נקה תוצאות מהמפה\" מסיר את שלושתם", async ({ page, loginAs, ui, api }) => {
+  test("(d) ניתוח → סמן + תא שטח + כיסוי (+ אתר ממוקד); \"נקה תוצאות מהמפה\" מסיר הכול", async ({ page, loginAs, ui, api }) => {
     const name = `E2E ניקוי-מלא ${uid()}`;
     const site = await api.createSite({ name, lat: 31.772, lon: 35.212 });
+    const focused = await api.createSite({ name: `E2E ניקוי-ממוקד ${uid()}`, lat: 31.700, lon: 35.100 });
     await loginAs("ADMIN");
+    await focusButton(page, focused.name).click();
+    await expect(siteMarkers(page, focused.id)).toHaveCount(1);
     await prepareAnalysis(page, ui, [name]);
     await runAndWait(page, [name]);
+    await expect(siteMarkers(page, focused.id)).toHaveCount(1);      // focus survives the tab switch
 
     await expect(siteMarkers(page, site.id)).toHaveCount(1);
     await expect(bboxRect(page)).toHaveCount(1);
@@ -145,6 +149,9 @@ test.describe("מצב המפה: פתיחה נקייה, סמני אתרים בה�
     await expect(page.getByText("✔ הוגדר")).toHaveCount(0);
     await expect(resultBlock(page, name)).toHaveCount(0);
     await expect(runRow(page, name)).toHaveCount(0);
+    await ui.tab("אתרי קשר");
+    await expect(focusButton(page, focused.name)).toHaveAttribute("aria-pressed", "false");
+    await expect(siteMarkers(page)).toHaveCount(0);
     // The result stays on the server
     expect((await api.coverageHistory()).some((h) => h.site_id === site.id)).toBe(true);
   });
@@ -264,7 +271,7 @@ test.describe("מצב המפה: פתיחה נקייה, סמני אתרים בה�
     await expectLayersTabClean(page, ui);
   });
 
-  test("(h) יציאה וכניסה מחדש באותו חלון → מפה נקייה", async ({ page, loginAs, ui, api }) => {
+  test("(h) יציאה וכניסה מחדש באותו חלון → מפה נקייה (גם בלי מיקוד)", async ({ page, loginAs, ui, api }) => {
     const name = `E2E כניסה-חדשה ${uid()}`;
     const site = await api.createSite({ name, lat: 31.772, lon: 35.212 });
     await api.analyze(site.id, JERUSALEM_BBOX);
@@ -273,6 +280,9 @@ test.describe("מצב המפה: פתיחה נקייה, סמני אתרים בה�
     await loadFromHistory(page, ui, name);
     await expect(coverageOverlays(page)).toHaveCount(1);
     await expect(siteMarkers(page, site.id)).toHaveCount(1);
+    await ui.tab("אתרי קשר");
+    await focusButton(page, name).click();
+    await expect(focusButton(page, name)).toHaveAttribute("aria-pressed", "true");
 
     await page.getByRole("button", { name: "יציאה" }).click();
     await expect(page).toHaveURL(/\/login$/);
@@ -285,6 +295,7 @@ test.describe("מצב המפה: פתיחה נקייה, סמני אתרים בה�
     await expect(card(page, name)).toBeVisible();
     await page.waitForTimeout(1000);
     await expectCleanMap(page);
+    await expect(focusButton(page, name)).toHaveAttribute("aria-pressed", "false");
     await expectLayersTabClean(page, ui);
   });
 });

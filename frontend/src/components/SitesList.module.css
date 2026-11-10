@@ -21,6 +21,21 @@
 }
 .card:hover  { border-color: rgba(0,212,255,0.4); }
 .card.active { border-color: var(--accent); background: rgba(0,212,255,0.05); }
+/* Focused on the map ("🎯 מיקוד") */
+.card.focused { border-color: var(--accent2); box-shadow: inset -3px 0 0 var(--accent2); }
+
+.focusBtn {
+  flex: 0 0 auto; padding: 6px 10px;
+  background: var(--bg); color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 4px;
+  font-family: inherit; font-size: 12px; cursor: pointer;
+  white-space: nowrap; transition: background .15s, color .15s;
+}
+.focusBtn:hover { background: rgba(0,212,255,0.12); }
+.focusBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.focusBtnOn, .focusBtnOn:hover {
+  background: var(--accent2); border-color: var(--accent2); color: #000; font-weight: 600;
+}
 
 .freqBadge {
   position: absolute; top: 10px; left: 10px;
@@ -37,13 +52,9 @@
 .detail { font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
 .notes  { font-size: 11px; color: var(--text-dim); font-style: italic; margin-top: 4px; }
 
-.deleteBtn {
-  position: absolute; bottom: 10px; left: 10px;
-  background: none; border: none; color: var(--danger);
-  font-size: 11px; cursor: pointer; opacity: 0;
-  transition: opacity .2s; font-family: inherit;
-}
-.card:hover .deleteBtn { opacity: 1; }
+/* In the action row next to edit (was absolutely positioned on top of the edit button) */
+.deleteBtn { font-family: inherit; white-space: nowrap; }
+.deleteBtn:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
 
 .actionBtn {
   width: 100%; padding: 9px 12px;

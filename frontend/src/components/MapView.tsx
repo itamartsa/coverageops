@@ -100,7 +100,7 @@ export default function MapView() {
 
   const {
     sites, drawMode, setDrawMode, bbox,
-    isCalculating, activeTab, activeSiteId, editingSite,
+    isCalculating, activeTab, activeSiteId, editingSite, focusedSiteId,
     selectedSiteIds, routeWaypoints,
     crossSectionResult, crossSectionSiteId, linkTransmitter, mapFitRequest,
     activeBaseMapId, mapLayers,
@@ -697,7 +697,8 @@ export default function MapView() {
   //  · the owner of a VISIBLE coverage layer,
   //  · the site chosen in the cross-section panel,
   //  · the link-tab transmitter (kind "site"),
-  //  · the site being viewed (Sites tab) or edited (edit-site tab).
+  //  · the site being viewed (Sites tab) or edited (edit-site tab),
+  //  · the site focused with "🎯 מיקוד" in the Sites list (any tab, until un-focused/cleared).
   // Nothing else draws site markers, so a fresh load / cleared map shows none.
   const shownSiteKey = useMemo(() => {
     const ids = new Set<number>(selectedSiteIds);
@@ -708,8 +709,9 @@ export default function MapView() {
     if (linkTransmitter?.kind === "site" && linkTransmitter.id != null) ids.add(linkTransmitter.id);
     if (activeTab === "sites" && activeSiteId != null) ids.add(activeSiteId);
     if (activeTab === "new" && editingSite) ids.add(editingSite.id);
+    if (focusedSiteId != null) ids.add(focusedSiteId);
     return [...ids].sort((a, b) => a - b).join(",");
-  }, [selectedSiteIds, mapLayers, crossSectionSiteId, linkTransmitter, activeTab, activeSiteId, editingSite]);
+  }, [selectedSiteIds, mapLayers, crossSectionSiteId, linkTransmitter, activeTab, activeSiteId, editingSite, focusedSiteId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -794,6 +796,43 @@ export default function MapView() {
       markersRef.current.set(site.id, { marker, site });
     });
   }, [sites, shownSiteKey]);
+
+  // "🎯 מיקוד": fly to the focused site, then open its popup and pulse its marker (~2 s).
+  // Declared after the marker effect so the focused site's marker already exists here.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || focusedSiteId == null) return;
+    const entry = markersRef.current.get(focusedSiteId);
+    if (!entry) return;
+    const { marker, site } = entry;
+    let pulseTimer: ReturnType<typeof setTimeout> | null = null;
+    let done = false;
+    const arrive = () => {
+      if (done) return;
+      done = true;
+      // The marker may have been rebuilt / removed (site edited, un-focused) meanwhile
+      const cur = markersRef.current.get(site.id)?.marker;
+      if (!cur || !map.hasLayer(cur) || useStore.getState().focusedSiteId !== site.id) return;
+      cur.openPopup();
+      const el = cur.getElement();
+      if (el) {
+        el.classList.remove(styles.focusPulse);
+        void el.offsetWidth;                       // restart the animation on re-focus
+        el.classList.add(styles.focusPulse);
+        pulseTimer = setTimeout(() => el.classList.remove(styles.focusPulse), 2200);
+      }
+    };
+    map.flyTo([site.lat, site.lon], Math.max(map.getZoom(), 14), { duration: 0.6 });
+    // Registered after flyTo(): its _stop() of a previous animation must not count as arrival
+    map.once("moveend", arrive);
+    const fallback = setTimeout(arrive, 1500);     // in case no moveend fires
+    return () => {
+      map.off("moveend", arrive);
+      clearTimeout(fallback);
+      if (pulseTimer) clearTimeout(pulseTimer);
+      marker.getElement()?.classList.remove(styles.focusPulse);
+    };
+  }, [focusedSiteId]);
 
   // Clicking a site in the Sites list (or creating one) brings it into view if it is off-screen
   useEffect(() => {

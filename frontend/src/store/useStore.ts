@@ -104,6 +104,15 @@ interface AppState {
   removeSite: (id: number) => void;
   setActiveSite: (id: number | null) => void;
   setEditingSite: (site: Site | null) => void;
+  /**
+   * Site pinned on the map by the Sites-list "🎯 מיקוד" button (not persisted). Its marker stays
+   * visible in every tab until it is un-focused, another site is focused, the map is cleared
+   * ("נקה תוצאות" / "אפס ובחר חדש"), the site is deleted or the user logs out.
+   */
+  focusedSiteId: number | null;
+  setFocusedSite: (id: number | null) => void;
+  /** Focus `id`, or un-focus it when it is already the focused site. */
+  toggleFocusedSite: (id: number) => void;
 
   // Coverage polygon
   bbox: BBox | null;
@@ -197,7 +206,7 @@ export const useStore = create<AppState>()(
       logout: () => {
         localStorage.removeItem("token");
         set({
-          token: null, user: null, sites: [], activeSiteId: null, editingSite: null,
+          token: null, user: null, sites: [], activeSiteId: null, editingSite: null, focusedSiteId: null,
           bbox: null, coverageResults: [], selectedSiteIds: [],
           // A new login starts with a clean map, like a fresh load
           mapLayers: initialMapLayers(), mapFitRequest: null, drawMode: null,
@@ -211,11 +220,17 @@ export const useStore = create<AppState>()(
       sites: [],
       activeSiteId: null,
       editingSite: null,
-      setSites:       (sites) => set({ sites }),
+      setSites:       (sites) => set((s) => ({
+        sites,
+        // A refreshed list without the focused site (deleted elsewhere) drops the focus
+        focusedSiteId: s.focusedSiteId != null && !sites.some((x) => x.id === s.focusedSiteId)
+          ? null : s.focusedSiteId,
+      })),
       addSite:        (site)  => set((s) => ({ sites: [...s.sites, site] })),
       removeSite:     (id)    => set((s) => ({
         sites: s.sites.filter((x) => x.id !== id),
         activeSiteId: s.activeSiteId === id ? null : s.activeSiteId,
+        focusedSiteId: s.focusedSiteId === id ? null : s.focusedSiteId,
         selectedSiteIds: s.selectedSiteIds.filter((x) => x !== id),
         crossSectionSiteId: s.crossSectionSiteId === id ? null : s.crossSectionSiteId,
         linkTransmitter: s.linkTransmitter?.kind === "site" && s.linkTransmitter.id === id
@@ -223,6 +238,9 @@ export const useStore = create<AppState>()(
       })),
       setActiveSite:  (id)   => set({ activeSiteId: id }),
       setEditingSite: (site) => set({ editingSite: site }),
+      focusedSiteId:  null,
+      setFocusedSite: (id)   => set({ focusedSiteId: id }),
+      toggleFocusedSite: (id) => set((s) => ({ focusedSiteId: s.focusedSiteId === id ? null : id })),
 
       // Coverage
       bbox:             null,

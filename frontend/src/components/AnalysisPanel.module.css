@@ -299,3 +299,15 @@
   color: var(--accent2); direction: ltr; display: inline-block;
 }
 .statsGrid3 .statValue { font-size: 17px; }
+
+/* "ⓘ פירוט מלא…" below the legend — opens the info panel right there */
+.infoMoreBtn {
+  display: block; width: 100%;
+  margin: -8px 0 10px; padding: 4px 6px;
+  background: none; border: 1px dashed transparent;
+  color: var(--text-dim); font-family: inherit; font-size: 10px;
+  text-align: center; cursor: pointer; transition: color .15s, border-color .15s;
+}
+.infoMoreBtn:hover { color: var(--accent); border-color: var(--border); }
+.infoMoreBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: var(--accent); }
+.infoMoreBtn[aria-expanded="true"] { color: var(--accent); }

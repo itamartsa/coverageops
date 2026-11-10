@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store/useStore";
 import { apiErrorText, coverageApi } from "../services/api";
 import type { CoverageResult } from "../services/api";
@@ -58,8 +58,128 @@ const RUN_STATUS_LABEL: Record<RunStatus, string> = {
 
 const errorText = (err: any) => apiErrorText(err, "שגיאה בחישוב");
 
+export type InfoPanelPosition = "top" | "bottom";
+
+const INFO_PANEL_ID = "coverage-info-panel";
+
+/**
+ * Methodology + per-level details of the coverage analysis. Rendered by AnalysisPanel either
+ * at the top (ⓘ in the header) or right below the colour legend — never both at once.
+ */
+export function CoverageInfoPanel({ id, position, onClose, scrollOnOpen = false }: {
+  id?: string;
+  position: InfoPanelPosition;
+  onClose: () => void;
+  /** Smooth-scroll the panel into view when it mounts (used when opened from the bottom). */
+  scrollOnOpen?: boolean;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (scrollOnOpen) panelRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [scrollOnOpen]);
+
+  return (
+    <div
+      ref={panelRef}
+      id={id}
+      className={styles.infoPanel}
+      data-testid="coverage-info-panel"
+      data-position={position}
+      role="region"
+      aria-label="פירוט רמות הכיסוי ושיטת החישוב"
+    >
+      <div className={styles.infoPanelClose}>
+        <span className={styles.infoPanelTitle}>כיצד מחושב ניתוח הכיסוי?</span>
+        <button type="button" className={styles.infoPanelCloseBtn} onClick={onClose} title="סגור" aria-label="סגור פירוט">✕</button>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>🛰 מודל הפצה</div>
+        <div className={styles.infoText}>
+          החישוב מבוסס על שילוב של שלושה מרכיבים:<br />
+          <strong>FSPL</strong> (Free Space Path Loss) — נוסחת פריס לחישוב
+          אובדן נתיב במרחב חופשי בפונקציה של מרחק ותדר:<br />
+          <span className={styles.formula}>RSSI = Pₜ − FSPL(d,f) − Ldiff + Ghₐ</span><br />
+          <strong>עקיפה רב-מכשולית — שיטת Deygout</strong> (ITU-R P.526 §4.5):
+          מאתרים את המכשול הראשי בנתיב, ולאחר מכן את המכשולים המשניים
+          משני צדיו — ולא רק את המחסום הבודד הגבוה ביותר.<br />
+          <strong>עקמומיות כדור הארץ</strong> — פרופיל הגובה מתוקן לפי רדיוס
+          אפקטיבי <strong>k = 4/3</strong> (שבירה אטמוספרית סטנדרטית).
+        </div>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>🗺 נתוני גובה (DEM)</div>
+        <div className={styles.infoText}>
+          המערכת מורידה אוטומטית tiles של גובה שטח מ-
+          <strong> Terrarium RGB</strong> (AWS S3). כל tile מקוד RGB:
+          <span className={styles.formula}>h(מ׳) = R×256 + G + B÷256 − 32768</span>
+          <strong>tiles חסרים</strong> מסומנים כ-NaN ואינם מוחלפים בגובה 0 —
+          כך שים / חור בנתונים לא ייצור &quot;מישור&quot; מדומה. אחוז הפיקסלים התקינים
+          מוצג בתוצאה.<br />
+          כאשר לא נמצאו נתוני DEM אמיתיים התוצאה מסומנת כ-
+          <strong> סימולציה</strong> ומוצגת אזהרה.
+        </div>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>📐 רשת אדפטיבית</div>
+        <div className={styles.infoText}>
+          הרזולוציה נקבעת אוטומטית לפי גודל תא השטח: יעד של
+          <strong> ~40 מ׳ לתא</strong>, בתחום של <strong>60–500 תאים לציר</strong>.
+          שטח קטן מקבל רשת צפופה ומדויקת; שטח גדול נשאר מהיר לחישוב.
+        </div>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>⚡ שלבי החישוב לכל תא</div>
+        <div className={styles.infoSteps}>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>1</span>חישוב FSPL לפי מרחק Haversine ותדר</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>2</span>דגימת פרופיל הגובה לאורך הנתיב + תיקון עקמומיות (k=4/3)</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>3</span>לכל נקודה: חישוב פרמטר ν (Fresnel-Kirchhoff)</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>4</span>Deygout: מכשול ראשי + מכשולים משניים → הפסד עקיפה כולל</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>5</span>רווח גובה אנטנה: 20·log₁₀(h / 1.5 מ׳) — מוגבל (capped) כשקיים DEM, כי הטרן כבר מגולם בפרופיל</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>6</span>DSM: הוספת 9 dB הפסד תכסית (מבנים/צמחייה)</div>
+          <div className={styles.infoStep}><span className={styles.infoStepNum}>7</span>תאים ללא נתוני גובה (NaN) אינם נספרים כ&quot;מכוסים&quot;</div>
+        </div>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>📶 מהו &quot;שטח מכוסה&quot;?</div>
+        <div className={styles.infoText}>
+          <strong>אחוז הכיסוי מחושב ביחס לסף הקליטה (rx_threshold) של האתר</strong> —
+          אחוז התאים שבהם RSSI ≥ הסף, למשל <span className={styles.inlineCode}>72% ≥ −90 dBm</span>.<br />
+          כמספר משני מוצג גם אחוז השטח עם <strong>אות כלשהו</strong> (&gt; −110 dBm),
+          שהיה ההגדרה הקודמת — ולכן גבוה יותר.
+        </div>
+      </div>
+
+      <div className={styles.infoSection}>
+        <div className={styles.infoSectionTitle}>🎨 סולם עוצמות האות — פירוט</div>
+        {LEGEND.map((row) => (
+          <div key={row.label} className={styles.infoLegendRow}>
+            <div className={styles.infoLegendColor} style={{
+              background: row.color,
+              border: row.color === "#ffffff" ? "1px solid #555" : undefined,
+            }} />
+            <div className={styles.infoLegendBody}>
+              <div className={styles.infoLegendLabel}>
+                <strong>{row.label}</strong>
+                <span className={styles.infoLegendValue}>{row.value} dBm</span>
+              </div>
+              <div className={styles.infoLegendDesc}>{row.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AnalysisPanel() {
-  const [infoOpen, setInfoOpen] = useState(false);
+  /** Where the methodology panel is open: at the top (ⓘ) or below the legend — one instance at most. */
+  const [infoOpenAt, setInfoOpenAt] = useState<InfoPanelPosition | null>(null);
+  const toggleInfo = (at: InfoPanelPosition) => setInfoOpenAt((cur) => (cur === at ? null : at));
   const [runs, setRuns] = useState<Record<number, SiteRun>>({});
 
   const {
@@ -70,7 +190,7 @@ export default function AnalysisPanel() {
     bbox, setBbox,
     coverageResults, setCoverageResults, setIsCalculating,
     isCalculating,
-    addMapLayer, clearCoverageLayers, user,
+    addMapLayer, clearCoverageLayers, setFocusedSite, user,
   } = useStore();
   const writable = canWrite(user?.role);
 
@@ -153,6 +273,7 @@ export default function AnalysisPanel() {
     clearCoverageLayers();
     setBbox(null);
     setSelectedSiteIds([]);
+    setFocusedSite(null);          // the "🎯 מיקוד" pin is part of what the map shows
     setDrawMode(null);
     setRuns({});
     notify("תוצאות, אתר ותא שטח נוקו מהמפה — לצפייה חוזרת: היסטוריה ← טען למפה");
@@ -167,102 +288,21 @@ export default function AnalysisPanel() {
       <div className={styles.sectionHeader}>
         אשף ניתוח כיסוי
         <button
+          type="button"
           className={styles.infoBtn}
-          onClick={() => setInfoOpen((v) => !v)}
+          onClick={() => toggleInfo("top")}
           title="מידע על שיטת החישוב"
+          aria-label="מידע על שיטת החישוב"
+          aria-expanded={infoOpenAt === "top"}
+          aria-controls={infoOpenAt === "top" ? INFO_PANEL_ID : undefined}
         >
           ⓘ
         </button>
       </div>
 
-      {/* Info panel – methodology */}
-      {infoOpen && (
-        <div className={styles.infoPanel}>
-          <div className={styles.infoPanelClose}>
-            <span className={styles.infoPanelTitle}>כיצד מחושב ניתוח הכיסוי?</span>
-            <button className={styles.infoPanelCloseBtn} onClick={() => setInfoOpen(false)}>✕</button>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>🛰 מודל הפצה</div>
-            <div className={styles.infoText}>
-              החישוב מבוסס על שילוב של שלושה מרכיבים:<br />
-              <strong>FSPL</strong> (Free Space Path Loss) — נוסחת פריס לחישוב
-              אובדן נתיב במרחב חופשי בפונקציה של מרחק ותדר:<br />
-              <span className={styles.formula}>RSSI = Pₜ − FSPL(d,f) − Ldiff + Ghₐ</span><br />
-              <strong>עקיפה רב-מכשולית — שיטת Deygout</strong> (ITU-R P.526 §4.5):
-              מאתרים את המכשול הראשי בנתיב, ולאחר מכן את המכשולים המשניים
-              משני צדיו — ולא רק את המחסום הבודד הגבוה ביותר.<br />
-              <strong>עקמומיות כדור הארץ</strong> — פרופיל הגובה מתוקן לפי רדיוס
-              אפקטיבי <strong>k = 4/3</strong> (שבירה אטמוספרית סטנדרטית).
-            </div>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>🗺 נתוני גובה (DEM)</div>
-            <div className={styles.infoText}>
-              המערכת מורידה אוטומטית tiles של גובה שטח מ-
-              <strong> Terrarium RGB</strong> (AWS S3). כל tile מקוד RGB:
-              <span className={styles.formula}>h(מ׳) = R×256 + G + B÷256 − 32768</span>
-              <strong>tiles חסרים</strong> מסומנים כ-NaN ואינם מוחלפים בגובה 0 —
-              כך שים / חור בנתונים לא ייצור &quot;מישור&quot; מדומה. אחוז הפיקסלים התקינים
-              מוצג בתוצאה.<br />
-              כאשר לא נמצאו נתוני DEM אמיתיים התוצאה מסומנת כ-
-              <strong> סימולציה</strong> ומוצגת אזהרה.
-            </div>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>📐 רשת אדפטיבית</div>
-            <div className={styles.infoText}>
-              הרזולוציה נקבעת אוטומטית לפי גודל תא השטח: יעד של
-              <strong> ~40 מ׳ לתא</strong>, בתחום של <strong>60–500 תאים לציר</strong>.
-              שטח קטן מקבל רשת צפופה ומדויקת; שטח גדול נשאר מהיר לחישוב.
-            </div>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>⚡ שלבי החישוב לכל תא</div>
-            <div className={styles.infoSteps}>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>1</span>חישוב FSPL לפי מרחק Haversine ותדר</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>2</span>דגימת פרופיל הגובה לאורך הנתיב + תיקון עקמומיות (k=4/3)</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>3</span>לכל נקודה: חישוב פרמטר ν (Fresnel-Kirchhoff)</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>4</span>Deygout: מכשול ראשי + מכשולים משניים → הפסד עקיפה כולל</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>5</span>רווח גובה אנטנה: 20·log₁₀(h / 1.5 מ׳) — מוגבל (capped) כשקיים DEM, כי הטרן כבר מגולם בפרופיל</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>6</span>DSM: הוספת 9 dB הפסד תכסית (מבנים/צמחייה)</div>
-              <div className={styles.infoStep}><span className={styles.infoStepNum}>7</span>תאים ללא נתוני גובה (NaN) אינם נספרים כ&quot;מכוסים&quot;</div>
-            </div>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>📶 מהו &quot;שטח מכוסה&quot;?</div>
-            <div className={styles.infoText}>
-              <strong>אחוז הכיסוי מחושב ביחס לסף הקליטה (rx_threshold) של האתר</strong> —
-              אחוז התאים שבהם RSSI ≥ הסף, למשל <span className={styles.inlineCode}>72% ≥ −90 dBm</span>.<br />
-              כמספר משני מוצג גם אחוז השטח עם <strong>אות כלשהו</strong> (&gt; −110 dBm),
-              שהיה ההגדרה הקודמת — ולכן גבוה יותר.
-            </div>
-          </div>
-
-          <div className={styles.infoSection}>
-            <div className={styles.infoSectionTitle}>🎨 סולם עוצמות האות — פירוט</div>
-            {LEGEND.map((row) => (
-              <div key={row.label} className={styles.infoLegendRow}>
-                <div className={styles.infoLegendColor} style={{
-                  background: row.color,
-                  border: row.color === "#ffffff" ? "1px solid #555" : undefined,
-                }} />
-                <div className={styles.infoLegendBody}>
-                  <div className={styles.infoLegendLabel}>
-                    <strong>{row.label}</strong>
-                    <span className={styles.infoLegendValue}>{row.value} dBm</span>
-                  </div>
-                  <div className={styles.infoLegendDesc}>{row.desc}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Info panel – methodology (opened from the ⓘ above) */}
+      {infoOpenAt === "top" && (
+        <CoverageInfoPanel id={INFO_PANEL_ID} position="top" onClose={() => setInfoOpenAt(null)} />
       )}
 
       {/* Step 1 – multi-site selection */}
@@ -412,9 +452,18 @@ export default function AnalysisPanel() {
           </div>
         ))}
       </div>
-      <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: -8, marginBottom: 8, textAlign: "center" }}>
-        לחץ ⓘ למעלה לפירוט מלא של כל רמה וכיצד מחושב הכיסוי
-      </div>
+      <button
+        type="button"
+        className={styles.infoMoreBtn}
+        onClick={() => toggleInfo("bottom")}
+        aria-expanded={infoOpenAt === "bottom"}
+        aria-controls={infoOpenAt === "bottom" ? INFO_PANEL_ID : undefined}
+      >
+        {infoOpenAt === "bottom" ? "▴ הסתר פירוט" : "ⓘ פירוט מלא של כל רמה וכיצד מחושב הכיסוי ▾"}
+      </button>
+      {infoOpenAt === "bottom" && (
+        <CoverageInfoPanel id={INFO_PANEL_ID} position="bottom" scrollOnOpen onClose={() => setInfoOpenAt(null)} />
+      )}
 
       {/* Stats – per site */}
       {coverageResults.length > 0 && (
