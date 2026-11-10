@@ -38,7 +38,7 @@ test.describe("לשונית שכבות", () => {
       await expect(coverageOverlays(page)).toHaveCount(1);
     });
 
-    test("שינוי שם שכבה נשמר גם אחרי רענון", async ({ page, ui }) => {
+    test("שינוי שם שכבה: רענון פותח מפה נקייה, וטעינה חוזרת מההיסטוריה שומרת את השם", async ({ page, ui }) => {
       const row = coverageRow(page, siteName);
       await row.getByTitle("לחץ לשינוי שם").click();
       const input = page.locator("aside input[class*='renameInput']");
@@ -54,10 +54,17 @@ test.describe("לשונית שכבות", () => {
       await input.press("Escape");
       await expect(coverageRow(page, newName)).toBeVisible();
 
+      // A reload always opens a clean map (layers are not persisted)…
       await page.reload();
       await ui.tab("🗂 שכבות");
-      await expect(coverageRow(page, newName)).toBeVisible();
+      await expect(page.locator("aside [class*='coverageRow']")).toHaveCount(0);
+      await expect(coverageOverlays(page)).toHaveCount(0);
+
+      // …but the rename is remembered when the result is loaded again from History
+      await loadFromHistory(page, ui, siteName);
       await expect(coverageOverlays(page)).toHaveCount(1);
+      await ui.tab("🗂 שכבות");
+      await expect(coverageRow(page, newName)).toBeVisible();
     });
 
     test("מחיקת שכבה מסירה אותה מהרשימה ומהמפה", async ({ page }) => {

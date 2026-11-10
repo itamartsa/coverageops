@@ -116,3 +116,26 @@ export async function polylineWeights(page: Page): Promise<number[]> {
 export async function expectOverlayCount(page: Page, n: number) {
   await expect(coverageOverlays(page)).toHaveCount(n);
 }
+
+/** User-site markers (divIcons with data-testid="site-marker-<id>"). Pass an id for one site. */
+export function siteMarkers(page: Page, siteId?: number) {
+  return page.locator(siteId == null ? '[data-testid^="site-marker-"]' : `[data-testid="site-marker-${siteId}"]`);
+}
+
+/** Analysis-area rectangle, its drag handle and the LOS lines (selected sites → area centre). */
+export const bboxRect   = (page: Page) => page.locator('[data-testid="analysis-bbox"]');
+export const bboxHandle = (page: Page) => page.locator('[data-testid="analysis-bbox-handle"]');
+export const losLines   = (page: Page) => page.locator('[data-testid="los-line"]');
+
+/** Every image overlay on the map (coverage PNGs + DEM). */
+export function imageOverlays(page: Page) {
+  return page.locator(".leaflet-image-layer");
+}
+
+/** True if the current map view contains the whole box. */
+export async function viewContains(page: Page, b: BBox): Promise<boolean> {
+  return page.evaluate((bb) => {
+    const m = (window as any).__coverageopsMap;
+    return m.getBounds().contains([[bb.sw_lat, bb.sw_lon], [bb.ne_lat, bb.ne_lon]]);
+  }, b);
+}

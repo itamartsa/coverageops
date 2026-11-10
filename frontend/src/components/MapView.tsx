@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import L from "leaflet";
 import { useStore } from "../store/useStore";
 import { notify } from "./Notification";
 import api, { apiErrorText, apiErrorTextAsync, sitesApi, coverageApi, cellSitesApi } from "../services/api";
-import type { BestServersResult, CellSiteDetail, CellSiteRow } from "../services/api";
+import type { BestServersResult, CellSiteDetail, CellSiteRow, Site } from "../services/api";
 import {
   CELL_OPERATORS, canEditCellSiteHeight, canPromoteCellSite, cellSiteBands, cellSiteHeightFormHtml,
   cellSitePopupHtml, cellSitePromoteFormHtml, cellSiteRfFormHtml, isManualHeight,
@@ -65,7 +65,8 @@ function fsplDb(dist_km: number, freq_mhz: number): number {
 export default function MapView() {
   const mapRef          = useRef<L.Map | null>(null);
   const mapElRef        = useRef<HTMLDivElement>(null);
-  const markersRef      = useRef<Map<number, L.Marker>>(new Map());
+  // Site markers + the Site object each was built from (rebuilt when the site changes)
+  const markersRef      = useRef<Map<number, { marker: L.Marker; site: Site }>>(new Map());
   const polyLayerRef    = useRef<L.Rectangle | null>(null);
   const bboxDragRef     = useRef<L.Marker | null>(null);
   const losLayersRef    = useRef<L.Polyline[]>([]);
@@ -98,10 +99,10 @@ export default function MapView() {
   const bestLayerRef     = useRef<L.LayerGroup | null>(null);
 
   const {
-    sites, drawMode, setDrawMode, setBbox, bbox,
-    isCalculating, setActiveTab,
-    selectedSiteIds, routeWaypoints, setRouteWaypoints,
-    crossSectionResult,
+    sites, drawMode, setDrawMode, bbox,
+    isCalculating, activeTab, activeSiteId, editingSite,
+    selectedSiteIds, routeWaypoints,
+    crossSectionResult, crossSectionSiteId, linkTransmitter, mapFitRequest,
     activeBaseMapId, mapLayers,
     cellSiteFilter, cellSitesVersion,
     linkReceiver, linkResult, bestServersResult, highlightedServerId, linkSubMode,
@@ -690,25 +691,48 @@ export default function MapView() {
     }
   }, [drawMode]);
 
-  // ── Sync site markers ────────────────────────────────────────────────────────
+  // ── Site markers: shown only in context ─────────────────────────────────────
+  // A user site's marker is on the map iff the site is
+  //  · selected in the analysis wizard,
+  //  · the owner of a VISIBLE coverage layer,
+  //  · the site chosen in the cross-section panel,
+  //  · the link-tab transmitter (kind "site"),
+  //  · the site being viewed (Sites tab) or edited (edit-site tab).
+  // Nothing else draws site markers, so a fresh load / cleared map shows none.
+  const shownSiteKey = useMemo(() => {
+    const ids = new Set<number>(selectedSiteIds);
+    mapLayers.forEach((l) => {
+      if (l.type === "coverage" && l.visible && l.siteId != null) ids.add(l.siteId);
+    });
+    if (crossSectionSiteId != null) ids.add(crossSectionSiteId);
+    if (linkTransmitter?.kind === "site" && linkTransmitter.id != null) ids.add(linkTransmitter.id);
+    if (activeTab === "sites" && activeSiteId != null) ids.add(activeSiteId);
+    if (activeTab === "new" && editingSite) ids.add(editingSite.id);
+    return [...ids].sort((a, b) => a - b).join(",");
+  }, [selectedSiteIds, mapLayers, crossSectionSiteId, linkTransmitter, activeTab, activeSiteId, editingSite]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const siteIds = new Set(sites.map((s) => s.id));
+    const shown = new Set(shownSiteKey ? shownSiteKey.split(",").map(Number) : []);
+    const byId = new Map(sites.map((s) => [s.id, s]));
 
-    // Remove stale markers
-    markersRef.current.forEach((marker, id) => {
-      if (!siteIds.has(id)) { map.removeLayer(marker); markersRef.current.delete(id); }
+    // Remove markers that are no longer in context, of deleted sites, or of changed sites (rebuilt below)
+    markersRef.current.forEach(({ marker, site }, id) => {
+      const cur = byId.get(id);
+      if (!shown.has(id) || !cur || cur !== site) {
+        map.removeLayer(marker);
+        markersRef.current.delete(id);
+      }
     });
 
-    // Add new markers
     sites.forEach((site) => {
-      if (markersRef.current.has(site.id)) return;
+      if (!shown.has(site.id) || markersRef.current.has(site.id)) return;
       const color = FREQ_COLORS[site.frequency] ?? "#00d4ff";
       const icon = L.divIcon({
         className: "",
-        html: `<div style="display:flex;flex-direction:column;align-items:center;">
+        html: `<div data-testid="site-marker-${site.id}" style="display:flex;flex-direction:column;align-items:center;">
           <div style="
             width:32px;height:32px;
             background:${color}22;
@@ -733,14 +757,14 @@ export default function MapView() {
         .addTo(map)
         .bindPopup(`
           <div style="font-family:sans-serif;min-width:200px;direction:rtl">
-            <b style="font-size:13px">${site.name}</b>
+            <b style="font-size:13px">${escHtml(site.name)}</b>
             <div style="margin:4px 0;border-top:1px solid #eee;"></div>
             <span style="color:#555;font-size:11px">📡 ${site.frequency} MHz</span><br>
             <span style="color:#555;font-size:11px">🏔 גובה מ"פ: <b>${site.elevation_m ?? 0} מ'</b> ASL</span><br>
             <span style="color:#555;font-size:11px">🏗 גובה אנטנה: <b>${site.ant_height} מ'</b> AGL</span><br>
             <span style="color:#555;font-size:11px">⚡ הספק: ${site.tx_power} dBm &nbsp;|&nbsp; סף: ${site.rx_threshold} dBm</span><br>
             <span style="color:#555;font-size:11px">🔭 רדיוס: ${site.max_radius} ק"מ</span>
-            ${site.notes ? `<br><i style="color:#aaa;font-size:11px">${site.notes}</i>` : ""}
+            ${site.notes ? `<br><i style="color:#aaa;font-size:11px">${escHtml(site.notes)}</i>` : ""}
           </div>
         `);
 
@@ -767,9 +791,25 @@ export default function MapView() {
         }
       });
 
-      markersRef.current.set(site.id, marker);
+      markersRef.current.set(site.id, { marker, site });
     });
-  }, [sites]);
+  }, [sites, shownSiteKey]);
+
+  // Clicking a site in the Sites list (or creating one) brings it into view if it is off-screen
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || activeSiteId == null) return;
+    const site = useStore.getState().sites.find((s) => s.id === activeSiteId);
+    if (site && !map.getBounds().contains([site.lat, site.lon])) map.panTo([site.lat, site.lon]);
+  }, [activeSiteId]);
+
+  // One-shot "fit the map to this box" requests (e.g. History → "טען למפה")
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapFitRequest) return;
+    const r = mapFitRequest;
+    map.fitBounds([[r.sw_lat, r.sw_lon], [r.ne_lat, r.ne_lon]], { padding: [40, 40], maxZoom: 15, animate: false });
+  }, [mapFitRequest]);
 
   // Coverage rendering is now driven by mapLayers (see effect above)
 
@@ -910,6 +950,7 @@ export default function MapView() {
       `, { sticky: true });
 
       line.addTo(map);
+      line.getElement()?.setAttribute("data-testid", "los-line");
       losLayersRef.current.push(line);
     });
   }, [bbox, selectedSiteIds, sites]);
@@ -1074,6 +1115,7 @@ export default function MapView() {
         dashArray: isCalculating ? "8,6" : "",
         className: isCalculating ? styles.pulsingPoly : ""
       }).addTo(map);
+      polyLayerRef.current.getElement()?.setAttribute("data-testid", "analysis-bbox");
 
       // Drag handle – visible only when not calculating
       if (!isCalculating) {
@@ -1084,7 +1126,7 @@ export default function MapView() {
 
         const dragIcon = L.divIcon({
           className: "",
-          html: `<div title="גרור להזזת תא השטח" style="
+          html: `<div data-testid="analysis-bbox-handle" title="גרור להזזת תא השטח" style="
             width:22px;height:22px;
             background:rgba(59,130,246,0.85);
             border:2px solid #fff;border-radius:4px;

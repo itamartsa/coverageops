@@ -25,9 +25,9 @@ export default function SitesList() {
       setCoverageResult(null);
       // The backend deleted the site's results too → drop their coverage layers from the map
       const st = useStore.getState();
-      st.mapLayers
-        .filter((l) => l.type === "coverage" && l.siteId === id)
-        .forEach((l) => st.removeMapLayer(l.id));
+      const gone = st.mapLayers.filter((l) => l.type === "coverage" && l.siteId === id);
+      gone.forEach((l) => st.removeMapLayer(l.id));
+      st.forgetLayerNames(gone.map((l) => l.id));
       setSelectedSiteIds(useStore.getState().selectedSiteIds.filter((x) => x !== id));
       qc.invalidateQueries({ queryKey: ["sites"] });
       notify("אתר נמחק");

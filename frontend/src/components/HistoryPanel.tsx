@@ -227,7 +227,7 @@ ${dqSectionHTML}
 
 // ── Component ────────────────────────────────────────────────────────────────
 export default function HistoryPanel() {
-  const { setCoverageResults, setBbox, setActiveTab, addMapLayer,
+  const { setCoverageResults, setBbox, setActiveTab, addMapLayer, requestMapFit,
           crossSectionResult, setCrossSectionResult, setRouteWaypoints, user } = useStore();
   const writable = canWrite(user?.role);
   const qc = useQueryClient();
@@ -246,6 +246,7 @@ export default function HistoryPanel() {
       // Also drop it from the map / layer list / result cards — the result no longer exists
       const st = useStore.getState();
       st.removeMapLayer(coverageLayerId(id));
+      st.forgetLayerNames([coverageLayerId(id)]);
       st.setCoverageResults(st.coverageResults.filter((r) => r.id !== id));
       qc.invalidateQueries({ queryKey: ["coverage-history"] });
       notify("✅ תוצאה נמחקה");
@@ -260,10 +261,22 @@ export default function HistoryPanel() {
       setCoverageResults([result]);
       // Map overlay is driven by the layer manager (PNG of the stored bbox)
       addMapLayer(layerFromResult(result, item.site_name));
-      setBbox({
+      const area = {
         sw_lat: item.poly_sw_lat, sw_lon: item.poly_sw_lon,
         ne_lat: item.poly_ne_lat, ne_lon: item.poly_ne_lon,
-      });
+      };
+      setBbox(area);
+      // Select the result's site in the wizard (→ its marker + LOS line are shown), if it still exists
+      const st = useStore.getState();
+      const site = st.sites.find((s) => s.id === item.site_id);
+      if (site && !st.selectedSiteIds.includes(site.id)) {
+        st.setSelectedSiteIds([...st.selectedSiteIds, site.id]);
+      }
+      // Fit the map to the area (+ the site, if it lies outside the area)
+      requestMapFit(site ? {
+        sw_lat: Math.min(area.sw_lat, site.lat), sw_lon: Math.min(area.sw_lon, site.lon),
+        ne_lat: Math.max(area.ne_lat, site.lat), ne_lon: Math.max(area.ne_lon, site.lon),
+      } : area);
       setActiveTab("analysis");
       notify(`✅ תוצאה #${item.id} נטענה למפה`);
     } catch {

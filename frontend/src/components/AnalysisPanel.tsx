@@ -142,12 +142,20 @@ export default function AnalysisPanel() {
     );
   }
 
+  /**
+   * "✕ נקה תוצאות מהמפה" / "✕ אפס ובחר חדש": back to a clean map — no coverage overlay,
+   * no site marker shown because of the wizard, no area rectangle / LOS lines.
+   * The results themselves stay on the server (History → "טען למפה" brings them back).
+   */
   function clearResults() {
     // The map draws coverage from the layer list, not from coverageResults —
-    // remove the coverage layers too (results stay available in History).
+    // remove the coverage layers too (also clears the result cards).
     clearCoverageLayers();
+    setBbox(null);
+    setSelectedSiteIds([]);
+    setDrawMode(null);
     setRuns({});
-    notify("תוצאות נוקו מהמפה (זמינות בלשונית היסטוריה)");
+    notify("תוצאות, אתר ותא שטח נוקו מהמפה — לצפייה חוזרת: היסטוריה ← טען למפה");
   }
 
   const step1Done = selectedSiteIds.length > 0;
@@ -330,7 +338,7 @@ export default function AnalysisPanel() {
         ) : (
           <div style={{fontSize: 12, color: "var(--text-dim)"}}>
             <span style={{color: "var(--accent2)"}}>תא שטח הוגדר.</span> ניתן לגרור אותו במפה.
-            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={() => { setBbox(null); clearCoverageLayers(); setRuns({}); }}>✕ אפס ובחר חדש</button>
+            <button className={`${styles.actionBtn} ${styles.danger}`} style={{marginTop: 8, padding: "5px"}} onClick={clearResults}>✕ אפס ובחר חדש</button>
           </div>
         )}
       </div>

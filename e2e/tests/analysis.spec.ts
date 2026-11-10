@@ -80,7 +80,7 @@ test.describe("אשף ניתוח כיסוי", () => {
     await expect(coverageOverlays(page)).toHaveCount(2);
 
     await clearResultsButton(page).click();
-    await ui.expectToast("תוצאות נוקו מהמפה");
+    await ui.expectToast("תוצאות, אתר ותא שטח נוקו מהמפה — לצפייה חוזרת: היסטוריה ← טען למפה");
     await expect(coverageOverlays(page)).toHaveCount(0);
     await expect(resultBlock(page, a)).toHaveCount(0);
     await expect(runRow(page, a)).toHaveCount(0);
@@ -122,7 +122,9 @@ test.describe("אשף ניתוח כיסוי", () => {
     await page.waitForTimeout(2500);
     await expect(coverageOverlays(page)).toHaveCount(0);
 
-    // Run again + clear again (rapid repeat)
+    // "Clear" also cleared the area + site selection → set them up again, run again + clear again (rapid repeat)
+    await expect(runButton(page)).toBeDisabled();
+    await prepareAnalysis(page, ui, [a, b]);
     await runButton(page).click();
     await expect(clearResultsButton(page)).toBeVisible({ timeout: 45_000 });
     await expect(coverageOverlays(page)).toHaveCount(2, { timeout: 15_000 });
@@ -153,6 +155,7 @@ test.describe("אשף ניתוח כיסוי", () => {
     await expect(page.getByRole("button", { name: "🔲 שרטט מלבן כיסוי חופשי" })).toBeVisible();
     await expect(runButton(page)).toBeDisabled();
     await expect(runRow(page, a)).toHaveCount(0);
+    await expect(page.getByText("✔ 2 נבחרו")).toHaveCount(0);           // site selection cleared too
     // Area rectangle (+ LOS lines to its centre) removed from the map
     await expect.poll(() => svgPaths(page).count()).toBeLessThan(pathsWithArea);
     await expect(page.locator('div[title="גרור להזזת תא השטח"]')).toHaveCount(0);

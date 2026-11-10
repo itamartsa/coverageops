@@ -46,6 +46,18 @@ const SYSTEM_LAYERS: MapLayer[] = [
   { id: "dem",      name: "גבהים (DEM)",          type: "dem",      visible: false },
 ];
 
+/** Fresh copy of the system layers — every session starts with all layers hidden. */
+const initialMapLayers = (): MapLayer[] => SYSTEM_LAYERS.map((l) => ({ ...l, visible: false }));
+
+/** localStorage key of the persisted store (see `persist` below). */
+export const STORE_PERSIST_KEY = "coverageops-storage";
+/**
+ * Persisted-state version.
+ *  0 → persisted `mapLayers` (coverage layers + system-layer visibility came back after reload)
+ *  1 → map layers are never persisted: the app always opens with a clean map
+ */
+const STORE_PERSIST_VERSION = 1;
+
 // ── Point-to-point link ───────────────────────────────────────────────────────
 
 export type DrawMode = "rect" | "square" | "point" | "waypoint" | "linkpoint";
@@ -88,6 +100,7 @@ interface AppState {
   editingSite: Site | null;
   setSites: (sites: Site[]) => void;
   addSite: (site: Site) => void;
+  /** Removes the site from the list and from every panel that had it chosen. */
   removeSite: (id: number) => void;
   setActiveSite: (id: number | null) => void;
   setEditingSite: (site: Site | null) => void;
@@ -110,6 +123,9 @@ interface AppState {
   setRouteWaypoints: (wps: { lat: number; lon: number }[]) => void;
   crossSectionResult: CrossSectionResult | null;
   setCrossSectionResult: (r: CrossSectionResult | null) => void;
+  /** Site chosen in the cross-section panel (not persisted). */
+  crossSectionSiteId: number | null;
+  setCrossSectionSiteId: (id: number | null) => void;
 
   // UI
   drawMode: DrawMode | null;
@@ -131,6 +147,15 @@ interface AppState {
   clearCoverageLayers: () => void;
   toggleMapLayer: (id: string) => void;
   renameMapLayer: (id: string, name: string) => void;
+  /**
+   * User renames of coverage layers, keyed by layer id. Persisted (unlike the layers themselves)
+   * so a renamed result keeps its name when it is loaded again from History after a reload.
+   */
+  layerNames: Record<string, string>;
+  forgetLayerNames: (ids: string[]) => void;
+  /** One-shot request for the map to fit a bounding box (`seq` changes on every request). */
+  mapFitRequest: (BBox & { seq: number }) | null;
+  requestMapFit: (b: BBox) => void;
 
   // ── Civil cellular sites layer ──────────────────────────────────────────────
   cellSiteFilter: { operators: string[]; showConstruction: boolean };
@@ -172,8 +197,11 @@ export const useStore = create<AppState>()(
       logout: () => {
         localStorage.removeItem("token");
         set({
-          token: null, user: null, sites: [], activeSiteId: null,
+          token: null, user: null, sites: [], activeSiteId: null, editingSite: null,
           bbox: null, coverageResults: [], selectedSiteIds: [],
+          // A new login starts with a clean map, like a fresh load
+          mapLayers: initialMapLayers(), mapFitRequest: null, drawMode: null,
+          routeWaypoints: [], crossSectionResult: null, crossSectionSiteId: null,
           linkTransmitter: null, linkReceiver: null, linkResult: null,
           bestServersResult: null, highlightedServerId: null, linkPickTransmitter: false,
         });
@@ -188,6 +216,10 @@ export const useStore = create<AppState>()(
       removeSite:     (id)    => set((s) => ({
         sites: s.sites.filter((x) => x.id !== id),
         activeSiteId: s.activeSiteId === id ? null : s.activeSiteId,
+        selectedSiteIds: s.selectedSiteIds.filter((x) => x !== id),
+        crossSectionSiteId: s.crossSectionSiteId === id ? null : s.crossSectionSiteId,
+        linkTransmitter: s.linkTransmitter?.kind === "site" && s.linkTransmitter.id === id
+          ? { ...s.linkTransmitter, id: null } : s.linkTransmitter,
       })),
       setActiveSite:  (id)   => set({ activeSiteId: id }),
       setEditingSite: (site) => set({ editingSite: site }),
@@ -208,6 +240,8 @@ export const useStore = create<AppState>()(
       setRouteWaypoints:    (wps) => set({ routeWaypoints: wps }),
       crossSectionResult:   null,
       setCrossSectionResult: (r) => set({ crossSectionResult: r }),
+      crossSectionSiteId:   null,
+      setCrossSectionSiteId: (id) => set({ crossSectionSiteId: id }),
 
       // UI
       drawMode:        null,
@@ -223,14 +257,14 @@ export const useStore = create<AppState>()(
       activeBaseMapId: "esri-street",
       setActiveBaseMapId: (id) => set({ activeBaseMapId: id }),
 
-      mapLayers: SYSTEM_LAYERS,
+      mapLayers: initialMapLayers(),
 
       addMapLayer: (layer) =>
         set((s) => ({
           // Update an existing layer with the same id (e.g. re-loading a result), keeping a user rename
           mapLayers: s.mapLayers.some((l) => l.id === layer.id)
             ? s.mapLayers.map((l) => (l.id === layer.id ? { ...l, ...layer, name: l.name } : l))
-            : [...s.mapLayers, layer],
+            : [...s.mapLayers, { ...layer, name: s.layerNames[layer.id] ?? layer.name }],
         })),
 
       removeMapLayer: (id) =>
@@ -275,37 +309,59 @@ export const useStore = create<AppState>()(
       setLinkPickTransmitter: (v) => set({ linkPickTransmitter: v }),
 
       renameMapLayer: (id, name) =>
-        set((s) => ({
-          mapLayers: s.mapLayers.map((l) =>
-            l.id === id ? { ...l, name } : l,
-          ),
-        })),
+        set((s) => {
+          const layer = s.mapLayers.find((l) => l.id === id);
+          return {
+            mapLayers: s.mapLayers.map((l) =>
+              l.id === id ? { ...l, name } : l,
+            ),
+            layerNames: layer?.type === "coverage" ? { ...s.layerNames, [id]: name } : s.layerNames,
+          };
+        }),
+      layerNames: {},
+      forgetLayerNames: (ids) =>
+        set((s) => {
+          if (!ids.some((id) => id in s.layerNames)) return {};
+          const layerNames = { ...s.layerNames };
+          ids.forEach((id) => { delete layerNames[id]; });
+          return { layerNames };
+        }),
+
+      mapFitRequest: null,
+      requestMapFit: (b) => set((s) => ({ mapFitRequest: { ...b, seq: (s.mapFitRequest?.seq ?? 0) + 1 } })),
     }),
     {
-      name: "coverageops-storage",
+      name: STORE_PERSIST_KEY,
+      version: STORE_PERSIST_VERSION,
+      // Only session / preference data. Map layers, the analysis bbox, selected sites etc. are
+      // deliberately NOT persisted: every load / reload / login opens with a clean map.
       partialize: (s) => ({
         token:          s.token,
         user:           s.user,
         analysisMode:   s.analysisMode,
         activeBaseMapId: s.activeBaseMapId,
-        // Persist layer metadata (not blobs — those are fetched on demand)
-        mapLayers:      s.mapLayers,
         cellSiteFilter: s.cellSiteFilter,
+        layerNames:     s.layerNames,
       }),
-      // Make sure system layers added in newer versions appear for existing users
+      // v0 persisted `mapLayers` — drop them
+      migrate: (persisted) => {
+        const { mapLayers: _old, ...rest } = (persisted ?? {}) as Partial<AppState>;
+        return rest as AppState;
+      },
+      // Take only the whitelisted keys from storage (whatever an older/other version left there)
+      // and always start from the system layers, all hidden.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<AppState>;
-        const saved = p.mapLayers ?? [];
-        const sysIds = new Set(SYSTEM_LAYERS.map((l) => l.id));
-        const mapLayers = [
-          ...SYSTEM_LAYERS.map((sl) => {
-            const old = saved.find((l) => l.id === sl.id);
-            return old ? { ...sl, visible: old.visible } : sl;
-          }),
-          // "cellular" = removed OSM layer; drop it from older persisted state
-          ...saved.filter((l) => !sysIds.has(l.id) && l.id !== "cellular"),
-        ];
-        return { ...current, ...p, mapLayers };
+        const picked: Partial<AppState> = {};
+        if (p.token !== undefined)           picked.token = p.token;
+        if (p.user !== undefined)            picked.user = p.user;
+        if (p.analysisMode === "DTM" || p.analysisMode === "DSM") picked.analysisMode = p.analysisMode;
+        if (typeof p.activeBaseMapId === "string") picked.activeBaseMapId = p.activeBaseMapId;
+        if (p.cellSiteFilter && Array.isArray(p.cellSiteFilter.operators)) {
+          picked.cellSiteFilter = { ...current.cellSiteFilter, ...p.cellSiteFilter };
+        }
+        if (p.layerNames && typeof p.layerNames === "object") picked.layerNames = p.layerNames;
+        return { ...current, ...picked, mapLayers: initialMapLayers() };
       },
     }
   )

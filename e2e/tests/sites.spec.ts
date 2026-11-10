@@ -6,7 +6,7 @@ import { JERUSALEM_BBOX } from "../support/analysis";
 import { loadFromHistory } from "../support/history";
 
 test.describe("אתרי קשר", () => {
-  test("הקמת אתר דרך הטופס — כולל בחירת מיקום מהמפה", async ({ page, loginAs, ui }) => {
+  test("הקמת אתר דרך הטופס — כולל בחירת מיקום מהמפה", async ({ page, loginAs, ui, api }) => {
     const name = `E2E אתר טופס ${uid()}`;
     await loginAs("OPERATOR");
     await ui.tab("הקמת אתר");
@@ -38,7 +38,10 @@ test.describe("אתרי קשר", () => {
     await expect(c).toContainText("-100 dBm");
     await expect(c).toContainText("נוצר בבדיקה");
     await expect(c).not.toContainText("ברירת מחדל");
+    // The new site is the one being viewed → exactly its marker is shown
     await expect(page.locator(".leaflet-marker-icon")).toHaveCount(markersBefore + 1);
+    const created = (await api.listSites()).find((s) => s.name === name)!;
+    await expect(page.locator(`[data-testid="site-marker-${created.id}"]`)).toHaveCount(1);
   });
 
   test("שגיאות אימות בטופס הקמת אתר", async ({ page, loginAs, ui, guard }) => {
@@ -118,11 +121,16 @@ test.describe("אתרי קשר", () => {
     const name = `E2E למחיקה ${uid()}`;
     const site = await api.createSite({ name, lat: 31.5, lon: 35.0 });
     await loginAs("ADMIN");
-    const markers = await page.locator(".leaflet-marker-icon").count();
+    // Site markers are shown only in context: none on open, the viewed site's marker after a click
+    const marker = page.locator(`[data-testid="site-marker-${site.id}"]`);
+    await expect(marker).toHaveCount(0);
+    await card(page, name).click();
+    await expect(marker).toHaveCount(1);
     await card(page, name).getByRole("button", { name: "✕ מחק" }).click();
     await ui.expectToast("אתר נמחק");
     await expect(card(page, name)).toHaveCount(0);
-    await expect(page.locator(".leaflet-marker-icon")).toHaveCount(markers - 1);
+    await expect(marker).toHaveCount(0);
+    await expect(page.locator('[data-testid^="site-marker-"]')).toHaveCount(0);
     expect((await api.listSites()).some((s) => s.id === site.id)).toBe(false);
   });
 

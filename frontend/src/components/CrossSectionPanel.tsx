@@ -36,10 +36,11 @@ export default function CrossSectionPanel() {
     drawMode, setDrawMode,
     routeWaypoints, setRouteWaypoints,
     setCrossSectionResult, user,
+    crossSectionSiteId: siteId, setCrossSectionSiteId: setSiteId,
   } = useStore();
   const writable = canWrite(user?.role);
 
-  const [siteId,    setSiteId]    = useState<number | null>(null);
+  // The chosen site lives in the store: its marker is shown on the map while it is chosen here
   const [result,    setResult]    = useState<CrossSectionResult | null>(null);
   const [loading,   setLoading]   = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -64,6 +65,7 @@ export default function CrossSectionPanel() {
     setRouteWaypoints(routeWaypoints.slice(0, -1));
   }
 
+  /** Clears the route and its result; the chosen site (and its map marker) stays chosen. */
   function clearRoute() {
     setRouteWaypoints([]);
     setResult(null);
