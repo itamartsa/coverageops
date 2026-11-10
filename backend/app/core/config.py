@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # In-process maintenance loop (aggregation, alerts, retention, purge). 0 disables it
     # (e.g. when cron runs `python -m app.scripts.field_maintenance`). Never runs under pytest.
     FIELD_MAINTENANCE_INTERVAL_S: int = 60
+    # Admin-only API + dashboard button that loads / removes the labelled DEMO fleet (group "דמו").
+    # Set to false in production.
+    FIELD_DEMO_ENABLED: bool = True
 
     class Config:
         env_file = ".env"

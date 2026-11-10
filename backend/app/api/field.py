@@ -1023,8 +1023,11 @@ def qr_payload(code: str, ownership: Optional[str] = None) -> str:
     return s + (f"&ownership={ownership}" if ownership else "")
 
 
-def qr_svg(payload: str) -> str:
-    import segno
+def qr_svg(payload: str) -> Optional[str]:
+    try:
+        import segno
+    except ImportError:      # dependency not installed yet (image built before it was added) – the
+        return None          # dialog falls back to the manual code; `pip install -r requirements.txt` fixes it
     buf = io.BytesIO()
     segno.make(payload, error="m", micro=False).save(buf, kind="svg", scale=6, border=2, xmldecl=False,
                                                        svgns=True, dark="#000000", light="#ffffff")
@@ -1375,3 +1378,35 @@ def maintenance_run(task: Optional[str] = None, db: Session = Depends(get_db), _
     if bad:
         raise HTTPException(422, detail=f"task: {', '.join(ALL_TASKS)} (partitioning אינו ממומש)")
     return run_maintenance(db, tasks)
+
+
+# ── Demo fleet (labelled group "דמו") – works on whichever database the server uses ──────────
+def _demo_guard() -> None:
+    if not settings.FIELD_DEMO_ENABLED:
+        raise HTTPException(404, detail="נתוני דמו מנוטרלים בשרת זה")
+
+
+@router.get("/demo")
+def demo_status(db: Session = Depends(get_db), _u: User = Depends(A)):
+    from app.services.field_demo import DEMO_GROUP, _demo_devices
+    return {"enabled": bool(settings.FIELD_DEMO_ENABLED), "group": DEMO_GROUP,
+            "devices": len(_demo_devices(db)) if settings.FIELD_DEMO_ENABLED else 0}
+
+
+@router.post("/demo/seed")
+def demo_seed(request: Request, hours: float = Query(8.0, ge=1.0, le=24.0),
+              db: Session = Depends(get_db), user: User = Depends(A)):
+    _demo_guard()
+    from app.services.field_demo import seed_demo
+    res = seed_demo(db, hours=hours)
+    log_activity(db, user.id, "FIELD_DEMO_SEED", {"devices": res.get("devices"), "samples": res.get("samples")}, request)
+    return res
+
+
+@router.delete("/demo")
+def demo_remove(request: Request, db: Session = Depends(get_db), user: User = Depends(A)):
+    _demo_guard()
+    from app.services.field_demo import remove_demo
+    res = remove_demo(db)
+    log_activity(db, user.id, "FIELD_DEMO_REMOVE", res if isinstance(res, dict) else {}, request)
+    return res

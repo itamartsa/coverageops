@@ -883,7 +883,7 @@ export interface EnrollmentCode {
 }
 export interface EnrollmentCodeCreated extends EnrollmentCode {
   /** Plain-text code — returned ONLY by the create call, never again */
-  code: string; qr_payload: string; qr_svg: string; note_he: string;
+  code: string; qr_payload: string; qr_svg: string | null; note_he: string;
 }
 
 export interface FieldGroup {
@@ -913,7 +913,14 @@ export interface DeviceRequirements {
   sections: { key: string; title_he: string; items: RequirementItem[] }[];
 }
 
+export interface FieldDemoStatus { enabled: boolean; group: string; devices: number }
+
 export const fieldApi = {
+  demoStatus: async (): Promise<FieldDemoStatus> => (await api.get("/api/field/demo")).data,
+  demoSeed: async (): Promise<{ devices: number; samples: number }> =>
+    (await api.post("/api/field/demo/seed", null, { timeout: 180_000 })).data,
+  demoRemove: async (): Promise<{ devices: number; samples: number }> =>
+    (await api.delete("/api/field/demo", { timeout: 180_000 })).data,
   tiersMeta: async (): Promise<TiersMeta> => (await api.get("/api/field/meta/tiers")).data,
   deviceRequirements: async (): Promise<DeviceRequirements> =>
     (await api.get("/api/field/meta/device-requirements")).data,

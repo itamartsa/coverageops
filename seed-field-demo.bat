@@ -13,5 +13,7 @@ if /i "%1"=="remove" (
   .venv\Scripts\python -m app.scripts.field_simulator --seed-demo
 )
 echo.
-echo Done. Start the system with run-local.bat and open http://localhost:3000/field
+echo Done. The demo was loaded into the LOCAL SQLite database used by run-local.bat.
+echo If you run the system with Docker, use the demo button on the /field page instead.
+echo Start the system with run-local.bat and open http://localhost:3000/field
 pause

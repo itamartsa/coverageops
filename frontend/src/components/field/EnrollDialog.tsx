@@ -46,7 +46,7 @@ export default function EnrollDialog({ groups, onClose, onShowRequirements }: {
   }
 
   if (created) {
-    const qrSrc = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(created.qr_svg)}`;
+    const qrSrc = created.qr_svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(created.qr_svg)}` : null;
     return (
       <Dialog title="צירוף מכשיר חדש" onClose={onClose} wide labelledBy="enr-title" footer={<>
         <button className={s.btnPrimary} onClick={copy}>{copied ? "✓ הועתק" : "העתק קוד"}</button>
@@ -56,7 +56,11 @@ export default function EnrollDialog({ groups, onClose, onShowRequirements }: {
       </>}>
         <div className={g.enr} data-testid="enroll-result">
           <figure className={g.qrBox}>
-            <img src={qrSrc} alt={`קוד QR לצירוף מכשיר — מכיל את כתובת השרת והקוד ${created.code}`} className={g.qr} data-testid="enroll-qr" />
+            {qrSrc ? (
+              <img src={qrSrc} alt={`קוד QR לצירוף מכשיר — מכיל את כתובת השרת והקוד ${created.code}`} className={g.qr} data-testid="enroll-qr" />
+            ) : (
+              <p className={s.muted} data-testid="enroll-qr-missing">קוד QR אינו זמין בשרת זה (חסרה חבילת segno) — השתמשו בקוד להקלדה ידנית.</p>
+            )}
             <figcaption className={s.muted}>QR · מכיל את כתובת השרת ואת הקוד</figcaption>
           </figure>
           <div style={{ minWidth: 0 }}>

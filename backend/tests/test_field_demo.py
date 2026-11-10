@@ -74,3 +74,38 @@ def test_startup_migrations_twice_with_field_tables():
     assert {"ix_fm_ts", "ix_fm_device_sample"} <= idx
     assert "uq_cmd_open" in cmd_idx and "uq_field_alert_open" in alert_idx
     eng.dispose()
+
+
+def test_demo_api_admin_only_seed_and_remove(factory, monkeypatch):
+    from app.core.config import settings
+    admin = as_role(factory, UserRole.ADMIN)
+    assert admin.get("/api/field/demo").json() == {"enabled": True, "group": DEMO_GROUP, "devices": 0}
+    r = admin.post("/api/field/demo/seed?hours=1")
+    assert r.status_code == 200 and r.json()["devices"] == len(DEMO_FLEET)
+    assert admin.get("/api/field/demo").json()["devices"] == len(DEMO_FLEET)
+    assert len(admin.get("/api/field/devices").json()["rows"]) == len(DEMO_FLEET)
+    for role in (UserRole.OPERATOR, UserRole.VIEWER):
+        other = as_role(factory, role)
+        assert other.post("/api/field/demo/seed").status_code == 403
+        assert other.delete("/api/field/demo").status_code == 403
+    admin = as_role(factory, UserRole.ADMIN)
+    assert admin.delete("/api/field/demo").status_code == 200
+    assert admin.get("/api/field/demo").json()["devices"] == 0
+    monkeypatch.setattr(settings, "FIELD_DEMO_ENABLED", False)
+    assert admin.post("/api/field/demo/seed").status_code == 404
+    assert admin.get("/api/field/demo").json()["enabled"] is False
+
+
+def test_enrollment_code_without_segno_falls_back_to_manual_code(factory, monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_segno(name, *a, **kw):
+        if name == "segno":
+            raise ImportError("segno missing")
+        return real_import(name, *a, **kw)
+
+    admin = as_role(factory, UserRole.ADMIN)
+    monkeypatch.setattr(builtins, "__import__", no_segno)
+    r = admin.post("/api/field/enrollment-codes", json={"ownership": "ORG"})
+    assert r.status_code == 201 and r.json()["qr_svg"] is None and r.json()["code"]

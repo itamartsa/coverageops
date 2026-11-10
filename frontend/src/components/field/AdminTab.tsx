@@ -10,6 +10,7 @@ import { fmtDateTime, fmtTime } from "../../lib/fieldFormat";
 import { useGroups } from "../../lib/fieldQueries";
 import GroupConfigForm, { scheduleText } from "./GroupConfigForm";
 import EnrollDialog from "./EnrollDialog";
+import DemoControls from "./DemoControls";
 import DeviceAdminActions, { ORG_ANON_RULE_HE, PERSONAL_DELETE_RULE_HE } from "./DeviceAdminActions";
 import { Dialog, ErrorState, Loading, Num, Ownership, StatusText } from "./primitives";
 import s from "./field.module.css";
@@ -46,6 +47,12 @@ export default function AdminTab({ isAdmin, devices, onShowRequirements, now, en
     <div className={t.stack} data-testid="admin-tab">
       {err && <p className={s.errbox} role="alert">{err} <button className={s.btn} onClick={() => setErr(null)}>סגור</button></p>}
       <div className={t.stack}>
+        {isAdmin && (
+          <section className={s.card} aria-label="נתוני דמו">
+            <div className={s.cardH}><h2>נתוני דמו</h2><span className={s.sub}>צי לדוגמה להתנסות — מסומן בקבוצה נפרדת וניתן להסרה</span></div>
+            <div style={{ padding: "10px 14px" }}><DemoControls /></div>
+          </section>
+        )}
         <section className={s.card} aria-label="קבוצות ותצורה">
           <div className={s.cardH}>
             <h2>קבוצות ותצורה</h2>

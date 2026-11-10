@@ -22,6 +22,7 @@ import AlertsList from "../components/field/AlertsList";
 import AnalysisTab from "../components/field/AnalysisTab";
 import PredictTab from "../components/field/PredictTab";
 import AdminTab from "../components/field/AdminTab";
+import DemoControls from "../components/field/DemoControls";
 import RequirementsPanel from "../components/field/RequirementsPanel";
 import { ErrorState, Loading } from "../components/field/primitives";
 import s from "../components/field/field.module.css";
@@ -129,6 +130,7 @@ export default function FieldPage() {
           {admin ? (
             <button className={s.btnPrimary} onClick={() => { setTab("admin"); setEnrollOpen(true); }}>צור קוד צירוף</button>
           ) : <p className={s.muted}>לצירוף מכשירים פנו למנהל המערכת.</p>}
+          {admin && <DemoControls compact />}
           <button className={s.lnk} onClick={() => setReqOpen(true)}>דרישות מערכת ליחידות הקצה</button>
         </div>
       </section>
