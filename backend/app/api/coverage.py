@@ -445,9 +445,9 @@ def _result_out(
     if grid is not None:
         thr = result.threshold_dbm if result.threshold_dbm is not None else -110.0
         level_distribution = level_distribution_from_grid(grid, thr)["level_distribution"]
+    # Area: no RSSI criterion (the share below threshold IS covered_pct)
     risk_level, risk_score = assess_risk(
         result.covered_pct or 0.0, weak_pct=result.weak_pct or 0.0,
-        rssi_min=_risk_rssi_min(result),
     )
     return {
         "id":                     result.id,
@@ -877,9 +877,8 @@ def get_report(
 
     # ── Risk (single source of truth: services/risk.py) ──────────────────────
     risk_rssi_min = _risk_rssi_min(result)
-    risk_level, risk_score = assess_risk(
-        covered, weak_pct=weak_pct, rssi_min=risk_rssi_min,
-    )
+    # Area: no RSSI criterion (the share below threshold IS covered_pct)
+    risk_level, risk_score = assess_risk(covered, weak_pct=weak_pct)
     summary = operational_summary(risk_level)
 
     has_dem = result.dem_source == DEM_SOURCE_TERRARIUM

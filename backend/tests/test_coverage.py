@@ -658,9 +658,9 @@ class TestRssiMinAll:
         assert r.rssi_min_all <= -120
         assert r.rssi_min_all == pytest.approx(round(float(np.nanmin(r.rssi_grid)), 1))
         assert r.rssi_min > -110                       # display stat unchanged
-        assert assess_risk(95, rssi_min=-120)[0] == "CRITICAL"
-        assert assess_risk(r.covered_pct, weak_pct=r.weak_pct,
-                           rssi_min=r.rssi_min_all)[0] == "CRITICAL"
+        # route-style use: deficit vs the site threshold drives the level
+        assert assess_risk(95, rssi_min=r.rssi_min_all,
+                           threshold_dbm=r.threshold_dbm)[0] == "CRITICAL"
 
     def test_cross_section_includes_none_points(self):
         wps = [{"lat": 32.0, "lon": 35.005}, {"lat": 32.0, "lon": 35.3}]

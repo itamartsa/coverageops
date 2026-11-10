@@ -37,10 +37,14 @@ class TestAssessRisk:
         (dict(covered_pct=95, weak_pct=15),                 "MEDIUM",   2),
         (dict(covered_pct=95, weak_pct=25),                 "HIGH",     3),
         (dict(covered_pct=95, weak_pct=35),                 "CRITICAL", 4),
-        (dict(covered_pct=95, rssi_min=-107),               "MEDIUM",   2),
-        (dict(covered_pct=95, rssi_min=-112),               "HIGH",     3),
-        (dict(covered_pct=95, rssi_min=-120),               "CRITICAL", 4),
-        (dict(covered_pct=95, rssi_min=None),               "LOW",      1),
+        # RSSI criterion is relative to the threshold (deficit = thr − rssi_min)
+        (dict(covered_pct=95, rssi_min=-107, threshold_dbm=-100), "MEDIUM",   2),
+        (dict(covered_pct=95, rssi_min=-112, threshold_dbm=-100), "HIGH",     3),
+        (dict(covered_pct=95, rssi_min=-120, threshold_dbm=-100), "CRITICAL", 4),
+        (dict(covered_pct=95, rssi_min=-104, threshold_dbm=-100), "LOW",      1),
+        (dict(covered_pct=95, rssi_min=None, threshold_dbm=-100), "LOW",      1),
+        # no threshold (area analyses) → RSSI criterion not applied
+        (dict(covered_pct=95, rssi_min=-140),               "LOW",      1),
     ])
     def test_rules(self, kwargs, level, score):
         assert assess_risk(**kwargs) == (level, score)
@@ -77,14 +81,20 @@ class TestAssessRisk:
                         rssi_min=r.rssi_min)
         assert a == b
 
-    def test_area_rssi_min_all_with_dead_cell(self):
-        """A −120 dBm cell must drive the area risk to CRITICAL via rssi_min_all."""
+    def test_threshold_relative_rssi_criterion(self):
+        """The RSSI criterion depends on the receiver threshold, not fixed dBm."""
+        # same −116 dBm: 11 dB below a −105 threshold → HIGH; 1 dB below −115 → LOW
+        assert assess_risk(95, rssi_min=-116, threshold_dbm=-105) == ("HIGH", 3)
+        assert assess_risk(95, rssi_min=-116, threshold_dbm=-115) == ("LOW", 1)
+        assert assess_risk(95, rssi_min=float("nan"), threshold_dbm=-90) == ("LOW", 1)
+
+    def test_area_risk_ignores_deep_shadow_cells(self):
+        """Regression: 89 % covered area with a few deeply shadowed cells was CRITICAL."""
         r = calculate_coverage(make_site(tx_power=-30.0),
                                BoundingBox(31.95, 34.95, 32.05, 35.05), "DTM", 20)
         assert r.rssi_min_all <= -120
-        assert assess_risk(95, rssi_min=-120) == ("CRITICAL", 4)
-        assert assess_risk(95, rssi_min=r.rssi_min_all) == ("CRITICAL", 4)
-        assert assess_risk(95, rssi_min=float("nan")) == ("LOW", 1)
+        # area callers pass covered/weak only
+        assert assess_risk(89.4, weak_pct=5.0) == ("LOW", 1)
 
 
 class TestOperationalSummary:

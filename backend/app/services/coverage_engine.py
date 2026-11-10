@@ -1322,6 +1322,7 @@ def calculate_cross_section(
         max_dead_length_km=max_dead,
         weak_pct=weak_pct,
         rssi_min=rssi_min_all,
+        threshold_dbm=site.rx_threshold,
     )
     recs = build_route_recommendations(
         site, covered_pct, dead_zones, risk,

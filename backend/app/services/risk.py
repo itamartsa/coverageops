@@ -17,25 +17,33 @@ coverage_engine._assess_risk (route: covered %, longest dead zone) and in
 api/coverage.get_report (area: covered %, minimum RSSI, weak/marginal %).
 A level is raised as soon as ANY criterion of that level is met.
 
-  Level     covered_pct   max_dead_km   weak_pct   rssi_min (dBm)
-  CRITICAL  < 50          > 3           > 30       < -115
-  HIGH      < 70          > 2           > 20       < -110
-  MEDIUM    < 85          > 1           > 10       < -105
+  Level     covered_pct   max_dead_km   weak_pct   rssi_min below threshold
+  CRITICAL  < 50          > 3           > 30       > 15 dB
+  HIGH      < 70          > 2           > 20       > 10 dB
+  MEDIUM    < 85          > 1           > 10       >  5 dB
   LOW       otherwise
 
 `covered_pct` is the operational coverage, i.e. the share of cells/points
 whose RSSI is at or above the site's rx_threshold.
+
+The RSSI criterion is RELATIVE to the receiver threshold (rx_threshold) and
+applies to ROUTES only: one point deep below the threshold is a real dead spot
+on the path. Area analyses do not pass it — the share of the area below the
+threshold is already measured by covered_pct, and fixed dBm limits (the old
+-115/-110/-105) rated well-covered areas CRITICAL whenever a few shadowed
+cells existed, independent of the site's actual threshold.
 """
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 # ── Thresholds ─────────────────────────────────────────────────────────────────
 
-# (level, score, covered_pct_below, max_dead_km_above, weak_pct_above, rssi_min_below)
+# (level, score, covered_pct_below, max_dead_km_above, weak_pct_above,
+#  rssi_deficit_db_above)  – deficit = rx_threshold − rssi_min
 RISK_RULES: Tuple[Tuple[str, int, float, float, float, float], ...] = (
-    ("CRITICAL", 4, 50.0, 3.0, 30.0, -115.0),
-    ("HIGH",     3, 70.0, 2.0, 20.0, -110.0),
-    ("MEDIUM",   2, 85.0, 1.0, 10.0, -105.0),
+    ("CRITICAL", 4, 50.0, 3.0, 30.0, 15.0),
+    ("HIGH",     3, 70.0, 2.0, 20.0, 10.0),
+    ("MEDIUM",   2, 85.0, 1.0, 10.0,  5.0),
 )
 RISK_LOW: Tuple[str, int] = ("LOW", 1)
 
@@ -49,6 +57,7 @@ def assess_risk(
     max_dead_length_km: float           = 0.0,
     weak_pct:           float           = 0.0,
     rssi_min:           Optional[float] = None,
+    threshold_dbm:      Optional[float] = None,
 ) -> Tuple[str, int]:
     """
     Four-level operational risk rating.
@@ -63,17 +72,23 @@ def assess_risk(
                             CoverageStats/CrossSectionStats.rssi_min_all, not the
                             display-only any-signal rssi_min.
                             None or NaN = criterion not applied
+        threshold_dbm:      receiver threshold (rx_threshold) the deficit is
+                            measured against; the RSSI criterion applies only
+                            when BOTH rssi_min and threshold_dbm are given
+                            (routes). Area analyses pass neither.
 
     Returns:
         (level, score) – level in LOW/MEDIUM/HIGH/CRITICAL, score 1..4
     """
     if rssi_min is not None and rssi_min != rssi_min:   # NaN → unknown
         rssi_min = None
-    for level, score, cov_lt, dead_gt, weak_gt, rssi_lt in RISK_RULES:
+    deficit = (threshold_dbm - rssi_min
+               if rssi_min is not None and threshold_dbm is not None else None)
+    for level, score, cov_lt, dead_gt, weak_gt, deficit_gt in RISK_RULES:
         if (covered_pct < cov_lt
                 or max_dead_length_km > dead_gt
                 or weak_pct > weak_gt
-                or (rssi_min is not None and rssi_min < rssi_lt)):
+                or (deficit is not None and deficit > deficit_gt)):
             return level, score
     return RISK_LOW
 
