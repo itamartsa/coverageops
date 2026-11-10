@@ -2,7 +2,8 @@
 /**
  * Starts the CoverageOps backend for the e2e run (playwright.config.ts → webServer[0]):
  *   1. wipes the e2e temp folder → fresh SQLite DB + results dir on every run,
- *   2. seeds the default users (python -m app.scripts.seed),
+ *   2. seeds the default users (python -m app.scripts.seed) and the field-reception demo fleet
+ *      (python -m app.scripts.field_simulator --seed-demo),
  *   3. runs uvicorn in the foreground until Playwright stops it.
  */
 const { spawn, spawnSync } = require("node:child_process");
@@ -21,6 +22,14 @@ const seed = spawnSync(py, ["-m", "app.scripts.seed"], { cwd: BACKEND_DIR, env, 
 if (seed.status !== 0) {
   console.error(`[e2e] seeding failed (exit ${seed.status}) — python: ${py}`);
   process.exit(seed.status ?? 1);
+}
+
+// Field reception: synthetic demo fleet (~23 devices, 8 h history ending now, alerts, aggregates)
+// for the /field specs. Clearly-labelled synthetic data ("דמו · …"), see app/services/field_demo.py.
+const demo = spawnSync(py, ["-m", "app.scripts.field_simulator", "--seed-demo"], { cwd: BACKEND_DIR, env, stdio: "inherit" });
+if (demo.status !== 0) {
+  console.error(`[e2e] field demo seeding failed (exit ${demo.status}) — python: ${py}`);
+  process.exit(demo.status ?? 1);
 }
 
 const server = spawn(

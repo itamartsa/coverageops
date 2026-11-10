@@ -37,8 +37,9 @@ npx playwright show-report
 
 - `playwright.config.ts` מפעיל שני שרתים (`webServer`):
   1. **backend** — `scripts/start-backend.cjs`: מוחק את התיקייה הזמנית
-     (`%TEMP%\coverageops-e2e` ב-Windows), יוצר מסד SQLite חדש, מריץ את `app.scripts.seed`
-     ומפעיל `uvicorn` על פורט 8000. ב-Windows נעשה שימוש ב-`backend\.venv\Scripts\python.exe`
+     (`%TEMP%\coverageops-e2e` ב-Windows), יוצר מסד SQLite חדש, מריץ את `app.scripts.seed`,
+     זורע את צי הדמו של "קליטה בשטח" (`python -m app.scripts.field_simulator --seed-demo` — כ-23 מכשירים
+     סינתטיים "דמו · …" עם 8 שעות היסטוריה, התראות ואגרגציות) ומפעיל `uvicorn` על פורט 8000. ב-Windows נעשה שימוש ב-`backend\.venv\Scripts\python.exe`
      אם הוא קיים, אחרת ב-`python` שב-PATH (ניתן לעקוף עם משתנה הסביבה `E2E_PYTHON`).
   2. **frontend** — `npx vite --port 3000 --strictPort` עם `VITE_API_URL=http://localhost:8000`.
 - אם השרתים כבר רצים (מחוץ ל-CI) — Playwright משתמש בהם (`reuseExistingServer`), ו-`global-setup.ts`
@@ -69,6 +70,7 @@ e2e/
 │   ├── fixtures.ts           # guard (שגיאות דף/קונסול/5xx), api, loginAs, ui
 │   ├── api.ts                # לקוח REST להזנת נתונים מהירה
 │   ├── map.ts                # המרת lat/lon ↔ נקודה על המסך, שרטוט מלבן, ספירת שכבות
+│   ├── field.ts              # /field: פתיחת לשונית, מכשירי דמו, יומן ביקורת, בדיקת גלילה אופקית
 │   ├── analysis.ts / history.ts / cellsites.ts / form.ts
 └── tests/
     ├── auth.spec.ts          # כניסה/יציאה, נתיבים מוגנים, הרשאות לפי תפקיד
@@ -80,7 +82,10 @@ e2e/
     ├── history.spec.ts       # היסטוריה: טעינה למפה, דוח, GeoJSON, מחיקה
     ├── link.spec.ts          # קישור נקודתי + "מי משרת את המכשיר"
     ├── admin.spec.ts         # פרופילי מכשיר ומשתמשים
-    └── smoke.spec.ts         # כל הלשוניות לכל תפקיד + בדיקת גלאי השגיאות
+    ├── smoke.spec.ts         # כל הלשוניות לכל תפקיד + בדיקת גלאי השגיאות
+    ├── field.spec.ts         # קליטה בשטח: מכשיר + פקודה + מסלול, קוד צירוף + QR, דרישות מכשיר,
+    │                         #   התראות, צופה (מצרפי בלבד), 390px, שכבת "מדידות שטח" במפה הראשית
+    └── field-tiers.spec.ts   # lib/fieldTiers.ts מול /api/field/meta/tiers ו-field_tier_vectors.json
 ```
 
 ## הערות
