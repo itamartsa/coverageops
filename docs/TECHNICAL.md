@@ -163,7 +163,8 @@ coverageops/
 `app.main` גם ללא מסד נתונים זמין.
 
 ### activity_log
-אוגר כניסות מוצלחות ונכשלות. לא נחשף ב-API נוכחי.
+אוגר כניסות מוצלחות ונכשלות, ופעולות מודול הקליטה בשטח (`FIELD_*`, detail = JSON). רשומות `FIELD_*` נחשפות ל-ADMIN
+ב-`GET /api/field/audit`; שאר הרשומות אינן נחשפות ב-API.
 
 ---
 
@@ -478,6 +479,156 @@ FSPL = 20·log₁₀(d_m) + 20·log₁₀(f_Hz) − 147.55
 
 ---
 
+## קליטה בשטח (Field reception) — `/api/field`
+
+מודול ניטור קליטה ממכשירי שטח (אפליקציית CoverageOps Field Probe). מסמכים מחייבים:
+`docs/field/API_CONTRACT.md` (כולל "גרסה 2" ו-"גרסה 2.1" שגוברות), `docs/field/FIELD_DASHBOARD_SPEC.md`,
+`docs/field/ANDROID_APP_SPEC.md`. ממומש בצד שרת: אבני דרך M1, צד השרת של M2, ו-M3.
+**לא ממומש (שלבים מאוחרים):** נמדד-מול-חזוי וכיול (M4: `/compare`, `/calibration`, `/cell-site-map`),
+חיזוי ובריאות מכשיר (M5: `/predict/*`, `/device-health`), ML/SSE (M6). ה-endpoints האלה אינם קיימים.
+
+### קבצים
+| קובץ | תפקיד |
+|---|---|
+| `app/models/field.py` | כל טבלאות `field_*` + ביטי `flags` |
+| `app/core/device_auth.py` | `get_current_device` (טוקן מכשיר `fdt_…`), `FieldHTTPError` → גוף `{detail, detail_code}` |
+| `app/core/ratelimit.py` | token bucket בזיכרון התהליך (לכל worker) |
+| `app/core/audit.py` | `log_activity()` → `activity_log` (detail = JSON) |
+| `app/api/field_ingest.py` | ממשקי המכשיר (נרשם ב-`main.py` **לפני** `field.py`) |
+| `app/api/field.py` | ממשקי הדאשבורד (JWT משתמש) |
+| `app/services/field_quality.py` | סיווג רמות (מקור אמת יחיד), `meas_tech`, טבלת טווחים, אימות ונרמול דגימה, גריד |
+| `app/services/field_ingest.py` | קליטת batch/heartbeat (משמש גם את זריעת הדמו) |
+| `app/services/field_agg.py` · `field_kpi.py` | אגרגציה מתור dirty, מפת חום, אזורים מתים · KPI מהגולמי |
+| `app/services/field_status.py` · `field_alerts.py` | סטטוס חי (מחושב) · הערכת התראות |
+| `app/services/field_privacy.py` · `field_maintenance.py` | מחיקה/אנונימיזציה · משימת תחזוקה |
+| `app/services/field_config.py` | תצורה (ברירות מחדל, אימות טווחים, מיזוג) + זריעות אידמפוטנטיות |
+| `app/services/field_demo.py` · `app/scripts/field_simulator.py` | נתוני דמו סינתטיים + סימולטור HTTP |
+| `app/services/field_requirements.py` | תוכן `GET /meta/device-requirements` |
+| `tests/fixtures/field_tier_vectors.json` | וקטורי הרמות + טבלת הטווחים, משותף עם צוות האנדרואיד |
+
+### טבלאות
+כל הטבלאות חדשות ונוצרות שלמות ב-`create_all` (אין עמודות ב-`_ADDITIVE_COLUMNS`). זמנים: UTC נאיבי; בפלט ISO עם `Z`.
+
+| טבלה | תוכן |
+|---|---|
+| `field_device_groups` | קבוצות + `config` (חלקי, ממוזג על ברירות המחדל). `is_default` = הקבוצה "כללי" (נזרעת באתחול) |
+| `field_enrollment_codes` | `code_hash` (sha256 + pepper), `code_hint`, `ownership` (ORG/PERSONAL, חובה), `max_uses`, `use_count`, `expires_at`, `revoked_at` |
+| `field_devices` | `public_id` (= `device_id` בחוזה), `device_uuid`, `ownership`, הסכמה, קבוצה, `config_override`, `config_version` לכל מכשיר, `token_hash`, `status` (`active`/`revoked`/`withdrawn`/`deleted`), `purge_mode`/`purged_at`, ועמודות `last_*` (מצב אחרון מ-batch/heartbeat). `is_anon_sink` = מכשיר-מצבה לשורות מאונונמות |
+| `field_measurements` | דגימות גולמיות, PK `(device_pk, ts, sample_id)`; עמודות מחושבות `tier`, `meas_tech` (LTE/NR/LEGACY/NONE), `gx/gy` (G100), `gx25/gy25` (2.5 ק"מ), `flags` |
+| `field_heartbeats` | כל heartbeat (שמירה 30 יום) |
+| `field_device_commands` | תור פקודות (`sample_now`, `upload_now`); אינדקס ייחודי חלקי `uq_cmd_open` = פקודה פתוחה אחת מכל סוג |
+| `field_agg_hourly` / `field_agg_daily` / `field_agg_daily_coarse` | תא G100 × שעה UTC / תא G100 × יום ישראל / תא 2.5 ק"מ × יום ישראל, × מפעיל × `meas_tech`; היסטוגרמת RSRP של 2 dB, ספירות ומשקלי זמן לפי רמה, OOS, `device_set` (פנימי — לא נחשף לעולם) |
+| `field_agg_dirty` | תור עבודה לאגרגציה; `level` = `g100` / `g2500` |
+| `field_alert_rules` / `field_alerts` | כללים (נזרעים) / התראות; `uq_field_alert_open` = התראה פתוחה אחת ל-`dedup_key` |
+| `field_operator_map` | `425-01` פרטנר, `425-02` סלקום, `425-03` פלאפון, `425-07` הוט מובייל, `425-08` (לא ודאי) |
+
+ביטי `flags`: 2 מחוץ לישראל · 4 `ts` עתידי קל (≤ 5 דק', נשמר כמות שהוא) · 8 מאונונם · 16 `stale_cell` (`cell_info_age_ms > 10000`) ·
+32 coarse · 64 מיקום ישן (`loc_age_ms > 30000`) · 128 sentinel אנדרואיד → null · 256 `age_unknown` (`cell_info_age_ms = null`) · 512 ערך רדיו מחוץ לטווח → null.
+
+**PostgreSQL:** אינדקס `ix_fm_ts` נוצר כ-BRIN (`postgresql_using`), ב-SQLite B-tree. **partitioning לא מומש** —
+`create_all` אינו יכול להמיר טבלה קיימת לטבלה מחולקת, ומשימות יצירת/מחיקת מחיצות לא נבדקו; שמירה = `DELETE` ברצועות יום.
+
+### אימות מכשיר
+- טוקן: `fdt_` + 43 תווי base64url; נשמר רק `sha256(FIELD_TOKEN_PEPPER + token)`. ביטול = `status != active` או `token_hash = NULL`.
+- **401 רק לטוקן חסר/לא תקף/מבוטל** (`detail_code: token_invalid`). תקלת DB בתוך האימות → **503 + `Retry-After: 30`**.
+- טוקן מכשיר נדחה בכל endpoint של משתמש (אינו JWT), ו-JWT נדחה בממשקי המכשיר.
+- שגיאות בגוף `{detail, detail_code}`; 429 עם `Retry-After`.
+
+### ממשקי מכשיר (טוקן מכשיר; `enroll` ללא אימות)
+| Method | Path | הערות |
+|---|---|---|
+| POST | `/devices/enroll` | 201 `{device_id, device_token, ownership, config}`; 400 `code_invalid` · 410 `code_expired` · 409 `code_used` / `ownership_mismatch` · 422 `consent_required`. ניסיון חוזר עם אותו (קוד, `device_uuid`) תוך 15 דק' כשהטוקן טרם שימש → אותו `device_id`, טוקן חדש, בלי שימוש נוסף בקוד. 10/דקה ל-IP; 5 כשלונות ב-10 דק' → 429 ל-15 דק' |
+| POST | `/measurements/batch` | `Content-Encoding: gzip` (או JSON רגיל); דחוס > 1MB / פרוס > `FIELD_MAX_BATCH_BYTES` → 413; > 500 דגימות → 413; מעטפה/שדה לא מוכר → 422; `device_id` זר → 403 `device_mismatch`. תשובה `{accepted, duplicates, rejected:[{sample_id, reason}], normalized, config_version}` — `normalized` = דגימות שערך רדיו בהן אופס. 30/דקה (burst 10) |
+| POST | `/devices/heartbeat` | תשובה `{config_version, server_time, commands:[{id,type,issued_at}]}`; `acked_commands: [{id, status ∈ done/skipped_paused/failed/expired}]`; `permissions.location` = precise/approximate/none. 6/דקה |
+| GET | `/devices/me/config` | תצורה אפקטיבית; `ETag: "<config_version>"`, `If-None-Match` → 304 |
+| POST | `/devices/me/withdraw` | PERSONAL בלבד (ORG → 403 `withdraw_not_allowed`); הטוקן מבוטל מיד, הנתונים נמחקים בריצת התחזוקה הבאה. `{status, data_action, completes_by}` |
+
+סיבות דחייה (סגור): `invalid_sample_id`, `invalid_ts`, `ts_in_future`, `ts_too_old`, `invalid_enum:<field>`, `out_of_range:lat|lon`.
+כל ערך מספרי אחר מחוץ לטווח מאופס ל-null (טבלת הטווחים ב-`field_quality.RANGES` = `field_tier_vectors.json`).
+
+### ממשקי דאשבורד (JWT) — A=ADMIN, O=OPERATOR, V=VIEWER
+| Method | Path | תפקיד | תמצית |
+|---|---|---|---|
+| GET | `/meta/device-requirements` | כל משתמש | דרישות מכשיר הקצה (Android 11 / API 30 ומעלה), פריטי "לאימות" מסומנים |
+| GET | `/meta/tiers` | כל משתמש | רמות, ספים, תוויות סטטוס |
+| GET | `/summary` | A,O,V | `fleet` + `kpis` + `freshness`. V: בלי `group_id` (403) |
+| GET | `/devices` | A,O | `{fields, rows}`; פילטרים `group_id,status,ownership,q,sort` |
+| GET | `/devices/live` | A,O | `{server_time, fields, rows}`; רק active/degraded/offline עם מיקום ≤ 60 דק'; `precision=coarse` → עיגול ~1 ק"מ |
+| GET/PATCH | `/devices/{id}` | GET A,O · PATCH A | פרטים מלאים / `{label?, group_id?, notes?, config_override?}` |
+| POST | `/devices/{id}/revoke` | A | `{status}` |
+| DELETE | `/devices/{id}?mode=delete\|anonymize` | A | 202 `{data_action, completes_by}`; ORG — אנונימיזציה בלבד (`mode=delete` → 422 `org_anonymize_only`) |
+| GET | `/devices/{id}/track` | A,O | GeoJSON; נרשם `FIELD_TRACK_VIEW`; ≤ 7 ימים |
+| GET | `/devices/{id}/timeseries` | A,O | `metric=rsrp\|nr_ss_rsrp\|nr_leg_ss_rsrp\|rsrq\|sinr\|battery`; סדרה נפרדת לכל `meas_tech` |
+| POST/GET | `/devices/{id}/commands` | A,O | הנפקה (201; 409 `command_pending`/`device_inactive`; 10/שעה) / רשימה; נרשם `FIELD_COMMAND_ISSUED` |
+| DELETE | `/commands/{id}` | A,O | ביטול `queued` בלבד (409 `command_not_cancellable`) |
+| GET | `/heatmap` | A,O,V | `bbox` + `measure=lte_rsrp\|nr_ss_rsrp` חובה; `metric`, `level=100\|500\|2500`; V: יומי, k ≥ 3, בלי `n_devices` |
+| GET | `/timeseries` | A,O,V | סדרות מצרפיות; V: `bucket=1d` בלבד, נקודות עם < k מכשירים מושמטות |
+| GET | `/breakdown` | A,O,V | `by=operator\|tech\|band\|cell\|group` (group — A,O), `fair=true` = תאים משותפים לכל המפעילים |
+| GET | `/dead-zones` | A,O,V | אשכולות 8-שכנים (5.4); V: תאים עם ≥ k מכשירים בלבד |
+| GET | `/alerts` · POST `/alerts/{id}/ack` · `/alerts/{id}/resolve` | A,O | |
+| GET · PUT | `/alert-rules` · `/alert-rules/{id}` | GET A,O · PUT A | |
+| GET/POST · DELETE | `/enrollment-codes` · `/enrollment-codes/{id}` | A | ב-POST בלבד: `code` (מוצג פעם אחת), `qr_payload`, `qr_svg` (segno) |
+| GET · POST/PUT/DELETE | `/groups` · `/groups/{id}` | GET A,O · שינוי A | שינוי תצורה מעלה `config_version` לכל מכשירי הקבוצה |
+| GET | `/export/measurements.csv` · `.geojson` | A,O | ≤ 31 ימים, ≤ 2M שורות; נרשם `FIELD_EXPORT` |
+| GET | `/export/heatmap.geojson` · `/export/kpis.csv` | A,O,V | מצרפי (אותם כללי V) |
+| GET | `/audit` | A | רשומות `activity_log` עם `FIELD_*` |
+| GET | `/operators` | A,O,V | |
+| POST | `/maintenance/run?task=…` | A | הרצה ידנית של משימת התחזוקה |
+
+### KPI ואגרגציות — כללים
+- רמות: חצי-פתוח על RSRP (LTE + עוגן NSA) / SS-RSRP (NR SA); OOS/emergency → 0; power_off ו-in_service בלי RSRP → "לא מסווג".
+- משקל זמן: `dt = min(הדגימה הבאה של אותו מכשיר+SIM − ts, 600 ש')`; לדגימה האחרונה `min(600, סוף החלון − ts)`; עודף מעל 600 ש' = "לא ידוע".
+- טריות (חוזה v2.1 #3): `stale_cell` לא נכנס ל-RSRP/SINR/RSRQ/רמות שירות ולשינויי תא; זמן OOS נספר תמיד.
+- `pct_time_by_tier[i]` = רמה i (0 שולי … 4 מצוין), מכנה = זמן מסווג בלבד. RSRP מוחזר תמיד מפוצל `lte` / `nr_sa` / `nsa_nr_leg`.
+- KPI (`/summary`, `/breakdown`, `/timeseries`) מחושבים מהגולמי — חלון עד `FIELD_RAW_RETENTION_DAYS`.
+  מפת חום ואזורים מתים — מהאגרגציות (שעתי לחלון ≤ 7 ימים ל-A/O, אחרת יומי; V תמיד יומי).
+- שכבת LTE במפה ובאזורים מתים כוללת גם דגימות "ללא שירות" (`meas_tech=NONE`) של אותו מפעיל.
+- דגימות coarse: רק בגריד 2.5 ק"מ (`level=2500`), לא ב-G100.
+
+### משימת תחזוקה
+`run_maintenance()` — `commands` (פקודה שלא נמסרה עד `expires_at` → expired; נמסרה ולא אושרה 24 ש' → expired),
+`purge` (withdraw/delete), `aggregate` (תור dirty), `alerts`, `retention` (גולמי 90 יום, heartbeats 30, שעתי 400, פקודות 90).
+אידמפוטנטית; נעילת תהליך + `pg_try_advisory_lock` ב-PostgreSQL.
+- בתוך ה-API: לולאת רקע ב-lifespan כל `FIELD_MAINTENANCE_INTERVAL_S` (ברירת מחדל 60 ש'; retention כל 6 ש'); לא רצה תחת pytest; 0 = כבוי.
+- CLI / cron: `python -m app.scripts.field_maintenance [--task aggregate --task alerts …]`.
+- הפעלה ידנית מה-UI: `POST /api/field/maintenance/run` (ADMIN).
+
+### משתני סביבה (field)
+| משתנה | ברירת מחדל | תיאור |
+|---|---|---|
+| FIELD_TOKEN_PEPPER | `CHANGE-ME-FIELD-PEPPER` | **חובה לשנות בפרודקשן** (אזהרה באתחול). שינוי מבטל את כל טוקני המכשירים והקודים |
+| FIELD_PUBLIC_BASE_URL | `http://localhost:8000` | `server=` בתוכן ה-QR (https בפרודקשן) |
+| FIELD_RAW_RETENTION_DAYS / FIELD_HEARTBEAT_RETENTION_DAYS / FIELD_HOURLY_AGG_RETENTION_DAYS / FIELD_COMMAND_RETENTION_DAYS | 90 / 30 / 400 / 90 | שמירה |
+| FIELD_MAX_BATCH_BYTES / FIELD_MAX_BATCH_COMPRESSED_BYTES | 5000000 / 1000000 | תקרות batch (→ 413) |
+| FIELD_VIEWER_K_MIN | 3 | k-אנונימיות לצופה |
+| FIELD_STALE_CELL_MS / FIELD_MAX_LOC_AGE_MS | 10000 / 30000 | ספי טריות |
+| FIELD_COMMAND_TTL_MIN / FIELD_OFFLINE_MIN / FIELD_NO_CONTACT_H | 20 / 15 / 6 | |
+| FIELD_RATE_LIMITS_ENABLED | true | |
+| FIELD_MAINTENANCE_INTERVAL_S | 60 | לולאת התחזוקה בתוך ה-API (0 = כבוי, אז להריץ את ה-CLI מ-cron) |
+
+### דמו וסימולטור — הרצה מקומית ב-Windows (SQLite של run-local.bat)
+`run-local.bat` מגדיר `DATABASE_URL=sqlite:///./local.db` ומריץ את ה-API מתוך `backend`, כך שהמסד הוא `backend\local.db`.
+אחרי שהחלון "CoverageOps API :8000" עלה, בחלון `cmd` נוסף:
+```bat
+cd /d <תיקיית הפרויקט>\backend
+set "DATABASE_URL=sqlite:///./local.db"
+.venv\Scripts\python -m app.scripts.field_simulator --seed-demo
+```
+- ממלא ~23 מכשירי דמו (קבוצה **"דמו"**, תוויות "דמו · …"): ORG ו-PERSONAL, שלושת המפעילים (425-01/02/03), LTE + NR_NSA + NR_SA +
+  מכשיר 3G, מסלולים על כביש 1, כביש 6, כביש 90 (ערבה — **אזור מת**), חיפה ות"א; מכשיר מושהה, לא מקוון, ניטור מוגבל, ללא קשר,
+  טרם התחבר, מיקום משוער (coarse), dual SIM, סוללה חלשה, אובדן נתונים, תצורה ממתינה ופקודה פתוחה; 8 שעות היסטוריה שמסתיימות "עכשיו"
+  (`--hours N` לשינוי). **כל הנתונים סינתטיים.**
+- אידמפוטנטי: הרצה חוזרת מוחקת את הדמו הקודם ובונה אותו מחדש (ההיסטוריה שוב מסתיימת "עכשיו"). מכשירים אמיתיים לא נפגעים.
+- הסרה: `.venv\Scripts\python -m app.scripts.field_simulator --remove-demo` (מוחק את כל המכשירים בקבוצה "דמו" ומחשב מחדש את האגרגציות).
+- סימולטור HTTP מול שרת רץ (נרשם דרך קודי צירוף שהוא יוצר כ-ADMIN, שולח batches ב-gzip, heartbeats ו-acks לפקודות; המכשירים
+  נכנסים לקבוצה "דמו"):
+```bat
+.venv\Scripts\python -m app.scripts.field_simulator --server http://localhost:8000 --user adminuser --password <סיסמה> --devices 3 --duration 120 --issue-command
+```
+  (או `FIELD_SIM_USER` / `FIELD_SIM_PASSWORD`). הסימולטור משתמש בספריה הסטנדרטית בלבד.
+
+---
+
 ## משתני סביבה
 
 | משתנה                    | ברירת מחדל                           | תיאור                    |
@@ -540,6 +691,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ```bash
 docker compose exec backend pytest tests/ -v
+# מקומית: pip install -r requirements.txt -r requirements-dev.txt && python -m pytest tests -q
 ```
 
 הבדיקות מכסות:
@@ -550,6 +702,9 @@ docker compose exec backend pytest tests/ -v
 - API מקצה לקצה (`test_api_coverage.py`): SQLite בזיכרון + DEM סינתטי —
   שמירת רסטר, רזולוציה אדפטיבית, PNG/GeoJSON/דוח, אתר מחוץ ל-bbox (רכס בין האתר לשטח
   מוריד RSSI), DEM חסר → אזהרה, שורות legacy, מיגרציות
+- קליטה בשטח (`test_field_*.py`): וקטורי רמות משותפים, כל ממשקי המכשיר וקודי השגיאה, אידמפוטנטיות, סינון טריות,
+  סטטוס חי עם שעון מוזרק, KPI על נתונים סינתטיים עם תשובה ידועה, מגבלות VIEWER, מחזור חיי פקודה, withdraw/מחיקה/אנונימיזציה,
+  יומן ביקורת, זריעת הדמו (פעמיים בלי כפילות) ומיגרציות
 - קישור נקודתי (`test_api_link.py`): משדר מאתר/אתר סלולר, פרופיל מקלט ודריסות, הרשאות, 400/413,
   שמירה/רשימה/מחיקה, דוח Word, "מי משרת" (דירוג, סינון מפעיל/רדיוס/small_indoor, ביצועים < 5 ש')
 
