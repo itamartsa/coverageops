@@ -43,6 +43,27 @@ class Settings(BaseSettings):
     # ── Storage ───────────────────────────────────────────────────────────────
     RESULTS_DIR: str = "/data/results"         # legacy GeoJSON files (read-only now)
 
+    # ── Field reception (/api/field) ──────────────────────────────────────────
+    # Safe defaults: run-local.bat (SQLite, no extra env vars) works unchanged.
+    FIELD_TOKEN_PEPPER: str = "CHANGE-ME-FIELD-PEPPER"   # REQUIRED in production (warning at startup)
+    FIELD_PUBLIC_BASE_URL: str = "http://localhost:8000"  # server= in the enrollment QR (https in production)
+    FIELD_RAW_RETENTION_DAYS: int = 90
+    FIELD_HEARTBEAT_RETENTION_DAYS: int = 30
+    FIELD_HOURLY_AGG_RETENTION_DAYS: int = 400
+    FIELD_COMMAND_RETENTION_DAYS: int = 90
+    FIELD_MAX_BATCH_BYTES: int = 5_000_000          # decompressed body cap → 413
+    FIELD_MAX_BATCH_COMPRESSED_BYTES: int = 1_000_000
+    FIELD_VIEWER_K_MIN: int = 3                     # k-anonymity: min distinct devices per cell for VIEWER
+    FIELD_STALE_CELL_MS: int = 10_000               # contract value; setting exists for tests only
+    FIELD_MAX_LOC_AGE_MS: int = 30_000
+    FIELD_COMMAND_TTL_MIN: int = 20
+    FIELD_OFFLINE_MIN: int = 15
+    FIELD_NO_CONTACT_H: int = 6
+    FIELD_RATE_LIMITS_ENABLED: bool = True
+    # In-process maintenance loop (aggregation, alerts, retention, purge). 0 disables it
+    # (e.g. when cron runs `python -m app.scripts.field_maintenance`). Never runs under pytest.
+    FIELD_MAINTENANCE_INTERVAL_S: int = 60
+
     class Config:
         env_file = ".env"
         case_sensitive = True

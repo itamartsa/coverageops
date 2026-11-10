@@ -1,0 +1,560 @@
+{
+ "schema": "coverageops.field_tier_vectors",
+ "version": 1,
+ "contract": "API_CONTRACT v2.1",
+ "owner": "CoverageOps repo (dashboard team) — the Android app copies this file; any change bumps version",
+ "measure": "RSRP dBm (LTE and NR_NSA LTE anchor) / SS-RSRP dBm (NR_SA); half-open boundaries",
+ "tiers": {
+  "4": "excellent",
+  "3": "good",
+  "2": "medium",
+  "1": "weak",
+  "0": "marginal",
+  "null": "unclassified"
+ },
+ "tier_thresholds_dbm": {
+  "4": -85,
+  "3": -95,
+  "2": -105,
+  "1": -115
+ },
+ "rules": [
+  "service_state out_of_service|emergency_only -> 0 in every technology",
+  "service_state power_off -> null",
+  "in_service without RSRP (UMTS/GSM/NONE or null) -> null",
+  "compare the value as is, no rounding"
+ ],
+ "vectors": [
+  {
+   "id": "lte_max",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -31,
+   "expected_tier": 4,
+   "note": "upper end of the RSRP range"
+  },
+  {
+   "id": "lte_excellent_boundary",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -85.0,
+   "expected_tier": 4,
+   "note": "x >= -85"
+  },
+  {
+   "id": "lte_just_below_85",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -85.1,
+   "expected_tier": 3
+  },
+  {
+   "id": "lte_good_lower_boundary",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -95.0,
+   "expected_tier": 3,
+   "note": "-95 <= x < -85"
+  },
+  {
+   "id": "lte_just_below_95",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -95.1,
+   "expected_tier": 2
+  },
+  {
+   "id": "lte_medium_lower_boundary",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -105.0,
+   "expected_tier": 2,
+   "note": "-105 <= x < -95"
+  },
+  {
+   "id": "lte_just_below_105",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -105.1,
+   "expected_tier": 1
+  },
+  {
+   "id": "lte_weak_lower_boundary",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -115.0,
+   "expected_tier": 1,
+   "note": "-115 <= x < -105"
+  },
+  {
+   "id": "lte_just_below_115",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -115.1,
+   "expected_tier": 0,
+   "note": "x < -115"
+  },
+  {
+   "id": "lte_min",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -156,
+   "expected_tier": 0,
+   "note": "lower end of the RSRP range"
+  },
+  {
+   "id": "nrsa_excellent_boundary",
+   "network_type": "NR_SA",
+   "service_state": "in_service",
+   "rsrp_dbm": -85.0,
+   "expected_tier": 4,
+   "note": "SS-RSRP"
+  },
+  {
+   "id": "nrsa_good_lower_boundary",
+   "network_type": "NR_SA",
+   "service_state": "in_service",
+   "rsrp_dbm": -95.0,
+   "expected_tier": 3,
+   "note": "SS-RSRP"
+  },
+  {
+   "id": "nrsa_just_below_115",
+   "network_type": "NR_SA",
+   "service_state": "in_service",
+   "rsrp_dbm": -115.1,
+   "expected_tier": 0,
+   "note": "SS-RSRP"
+  },
+  {
+   "id": "nsa_anchor_decides_weak",
+   "network_type": "NR_NSA",
+   "service_state": "in_service",
+   "rsrp_dbm": -110.0,
+   "nr_leg": {
+    "ss_rsrp_dbm": -80.0
+   },
+   "expected_tier": 1,
+   "note": "tier from the LTE anchor; nr_leg ignored"
+  },
+  {
+   "id": "nsa_anchor_decides_good",
+   "network_type": "NR_NSA",
+   "service_state": "in_service",
+   "rsrp_dbm": -90.0,
+   "nr_leg": {
+    "ss_rsrp_dbm": -120.0
+   },
+   "expected_tier": 3,
+   "note": "tier from the LTE anchor; nr_leg ignored"
+  },
+  {
+   "id": "lte_oos_strong_rsrp",
+   "network_type": "LTE",
+   "service_state": "out_of_service",
+   "rsrp_dbm": -80.0,
+   "expected_tier": 0,
+   "note": "service_state wins over RSRP"
+  },
+  {
+   "id": "lte_oos_null_rsrp",
+   "network_type": "LTE",
+   "service_state": "out_of_service",
+   "rsrp_dbm": null,
+   "expected_tier": 0
+  },
+  {
+   "id": "nrsa_emergency_only",
+   "network_type": "NR_SA",
+   "service_state": "emergency_only",
+   "rsrp_dbm": -90.0,
+   "expected_tier": 0
+  },
+  {
+   "id": "none_oos",
+   "network_type": "NONE",
+   "service_state": "out_of_service",
+   "rsrp_dbm": null,
+   "expected_tier": 0
+  },
+  {
+   "id": "umts_emergency_only",
+   "network_type": "UMTS",
+   "service_state": "emergency_only",
+   "rsrp_dbm": null,
+   "expected_tier": 0
+  },
+  {
+   "id": "lte_power_off",
+   "network_type": "LTE",
+   "service_state": "power_off",
+   "rsrp_dbm": -90.0,
+   "expected_tier": null,
+   "note": "power_off -> unclassified"
+  },
+  {
+   "id": "none_power_off",
+   "network_type": "NONE",
+   "service_state": "power_off",
+   "rsrp_dbm": null,
+   "expected_tier": null
+  },
+  {
+   "id": "lte_in_service_null_rsrp",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": null,
+   "expected_tier": null
+  },
+  {
+   "id": "nrsa_in_service_null_rsrp",
+   "network_type": "NR_SA",
+   "service_state": "in_service",
+   "rsrp_dbm": null,
+   "expected_tier": null
+  },
+  {
+   "id": "umts_in_service",
+   "network_type": "UMTS",
+   "service_state": "in_service",
+   "rsrp_dbm": null,
+   "rssi_dbm": -75.0,
+   "expected_tier": null,
+   "note": "2G/3G are unclassified (rssi only)"
+  },
+  {
+   "id": "gsm_in_service",
+   "network_type": "GSM",
+   "service_state": "in_service",
+   "rsrp_dbm": null,
+   "rssi_dbm": -95.0,
+   "expected_tier": null,
+   "note": "2G/3G are unclassified (rssi only)"
+  },
+  {
+   "id": "none_in_service",
+   "network_type": "NONE",
+   "service_state": "in_service",
+   "rsrp_dbm": null,
+   "expected_tier": null,
+   "note": "[assumption] not a realistic state; defined as unclassified"
+  },
+  {
+   "id": "lte_stale_still_classified",
+   "network_type": "LTE",
+   "service_state": "in_service",
+   "rsrp_dbm": -100.0,
+   "cell_info_age_ms": 25000,
+   "expected_tier": 2,
+   "note": "staleness is applied where tiers are used, not in classification"
+  }
+ ],
+ "normalization": {
+  "note": "Android 'unavailable' sentinels are normalised to null before validation/classification; they are not out_of_range",
+  "sentinels": [
+   2147483647,
+   9223372036854775807,
+   -2147483648
+  ],
+  "vectors": [
+   {
+    "id": "rsrp_int_max",
+    "field": "rsrp_dbm",
+    "input": 2147483647,
+    "expected": null,
+    "network_type": "LTE",
+    "service_state": "in_service",
+    "expected_tier": null
+   },
+   {
+    "id": "rsrp_long_max",
+    "field": "rsrp_dbm",
+    "input": 9223372036854775807,
+    "expected": null,
+    "network_type": "LTE",
+    "service_state": "in_service",
+    "expected_tier": null
+   },
+   {
+    "id": "nr_leg_ss_rsrp_int_min",
+    "field": "nr_leg.ss_rsrp_dbm",
+    "input": -2147483648,
+    "expected": null,
+    "network_type": "NR_NSA",
+    "service_state": "in_service",
+    "rsrp_dbm": -90.0,
+    "expected_tier": 3
+   }
+  ]
+ },
+ "ranges": {
+  "note": "v2.1 rule 4: a value outside [min,max] is nulled by the server and the sample is accepted (counted in 'normalized'); only lat/lon out of range reject the sample (out_of_range:lat|lon). source=spec: FIELD_DASHBOARD_SPEC 3.3; source=type: server type-safety bound (DB column).",
+  "fields": {
+   "lat": {
+    "min": -90,
+    "max": 90,
+    "source": "spec"
+   },
+   "lon": {
+    "min": -180,
+    "max": 180,
+    "source": "spec"
+   },
+   "loc_accuracy_m": {
+    "min": 0,
+    "max": 50000,
+    "source": "spec"
+   },
+   "rsrp_dbm": {
+    "min": -156,
+    "max": -31,
+    "source": "spec"
+   },
+   "rsrq_db": {
+    "min": -43,
+    "max": 20,
+    "source": "spec"
+   },
+   "sinr_db": {
+    "min": -23,
+    "max": 40,
+    "source": "spec"
+   },
+   "rssi_dbm": {
+    "min": -130,
+    "max": -10,
+    "source": "spec"
+   },
+   "battery_pct": {
+    "min": 0,
+    "max": 100,
+    "source": "spec"
+   },
+   "signal_level": {
+    "min": 0,
+    "max": 4,
+    "source": "spec"
+   },
+   "timing_advance": {
+    "min": 0,
+    "max": 1282,
+    "source": "spec"
+   },
+   "timing_advance_us": {
+    "min": 0,
+    "max": 2000,
+    "source": "spec"
+   },
+   "cell_info_age_ms": {
+    "min": 0,
+    "max": 86400000,
+    "source": "spec"
+   },
+   "loc_age_ms": {
+    "min": 0,
+    "max": 86400000,
+    "source": "spec"
+   },
+   "sim_slot": {
+    "min": 0,
+    "max": 3,
+    "source": "spec"
+   },
+   "nr_leg.ss_rsrp_dbm": {
+    "min": -156,
+    "max": -31,
+    "source": "spec"
+   },
+   "nr_leg.ss_rsrq_db": {
+    "min": -43,
+    "max": 20,
+    "source": "spec"
+   },
+   "nr_leg.ss_sinr_db": {
+    "min": -23,
+    "max": 40,
+    "source": "spec"
+   },
+   "neighbors.rsrp_dbm": {
+    "min": -156,
+    "max": -31,
+    "source": "spec"
+   },
+   "neighbors.rsrq_db": {
+    "min": -43,
+    "max": 20,
+    "source": "spec"
+   },
+   "cell_id": {
+    "min": 0,
+    "max": 68719476735,
+    "source": "type"
+   },
+   "pci": {
+    "min": 0,
+    "max": 1007,
+    "source": "type"
+   },
+   "tac": {
+    "min": 0,
+    "max": 16777215,
+    "source": "type"
+   },
+   "earfcn_arfcn": {
+    "min": 0,
+    "max": 3279165,
+    "source": "type"
+   },
+   "band": {
+    "min": 1,
+    "max": 1024,
+    "source": "type"
+   },
+   "cqi": {
+    "min": 0,
+    "max": 15,
+    "source": "type"
+   },
+   "altitude_m": {
+    "min": -1000,
+    "max": 10000,
+    "source": "type"
+   },
+   "altitude_msl_m": {
+    "min": -1000,
+    "max": 10000,
+    "source": "type"
+   },
+   "speed_mps": {
+    "min": 0,
+    "max": 350,
+    "source": "type"
+   },
+   "bearing_deg": {
+    "min": 0,
+    "max": 360,
+    "source": "type"
+   },
+   "nr_leg.pci": {
+    "min": 0,
+    "max": 1007,
+    "source": "type"
+   },
+   "nr_leg.arfcn": {
+    "min": 0,
+    "max": 3279165,
+    "source": "type"
+   },
+   "nr_leg.band": {
+    "min": 1,
+    "max": 1024,
+    "source": "type"
+   },
+   "neighbors.pci": {
+    "min": 0,
+    "max": 1007,
+    "source": "type"
+   },
+   "neighbors.earfcn_arfcn": {
+    "min": 0,
+    "max": 3279165,
+    "source": "type"
+   },
+   "active_test.latency_ms": {
+    "min": 0,
+    "max": 600000,
+    "source": "type"
+   },
+   "active_test.jitter_ms": {
+    "min": 0,
+    "max": 600000,
+    "source": "type"
+   },
+   "active_test.loss_pct": {
+    "min": 0,
+    "max": 100,
+    "source": "type"
+   },
+   "active_test.dl_kbps": {
+    "min": 0,
+    "max": 100000000,
+    "source": "type"
+   },
+   "active_test.ul_kbps": {
+    "min": 0,
+    "max": 100000000,
+    "source": "type"
+   }
+  },
+  "range_vectors": [
+   {
+    "id": "rsrp_below_min",
+    "field": "rsrp_dbm",
+    "input": -156.1,
+    "expected": null,
+    "normalized": true
+   },
+   {
+    "id": "rsrp_at_min",
+    "field": "rsrp_dbm",
+    "input": -156,
+    "expected": -156,
+    "normalized": false
+   },
+   {
+    "id": "rsrp_above_max",
+    "field": "rsrp_dbm",
+    "input": -30,
+    "expected": null,
+    "normalized": true
+   },
+   {
+    "id": "rsrq_above_max",
+    "field": "rsrq_db",
+    "input": 21,
+    "expected": null,
+    "normalized": true
+   },
+   {
+    "id": "sinr_at_max",
+    "field": "sinr_db",
+    "input": 40,
+    "expected": 40,
+    "normalized": false
+   },
+   {
+    "id": "battery_above",
+    "field": "battery_pct",
+    "input": 101,
+    "expected": null,
+    "normalized": true
+   },
+   {
+    "id": "ta_at_max",
+    "field": "timing_advance",
+    "input": 1282,
+    "expected": 1282,
+    "normalized": false
+   },
+   {
+    "id": "ta_above",
+    "field": "timing_advance",
+    "input": 1283,
+    "expected": null,
+    "normalized": true
+   },
+   {
+    "id": "lat_out",
+    "field": "lat",
+    "input": 91,
+    "reject": "out_of_range:lat"
+   },
+   {
+    "id": "lon_out",
+    "field": "lon",
+    "input": -181,
+    "reject": "out_of_range:lon"
+   }
+  ]
+ }
+}
