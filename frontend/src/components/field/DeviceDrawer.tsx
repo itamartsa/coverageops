@@ -3,7 +3,7 @@
  * the LTE anchor; the NR leg shown separately, without a tier), serving cell, permissions and
  * degraded reasons, config version, RSRP time series, commands, track (audit-logged), CSV export.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiErrorText, fieldApi, type DeviceTrack, type DeviceTsMetric, type FieldOperator } from "../../services/api";
 import { fmtDateTime, fmtNum, relTime, durationText } from "../../lib/fieldFormat";
@@ -48,6 +48,12 @@ export default function DeviceDrawer({ id, window: win, operators, isAdmin, onCl
   const [trackBusy, setTrackBusy] = useState(false);
   const [trackErr, setTrackErr] = useState<string | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  // Single-column layout (≤ 1100 px): the panel sits below the map / table — bring it into view
+  const asideRef = useRef<HTMLElement>(null);
+  const loaded = !!dev;
+  useEffect(() => {
+    if (loaded && window.innerWidth <= 1100) asideRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [loaded]);
 
   async function showTrack() {
     if (track) { onTrack(null); return; }
@@ -99,7 +105,7 @@ export default function DeviceDrawer({ id, window: win, operators, isAdmin, onCl
   const oosSec = (tsQ.data?.gaps ?? []).filter((g) => g[2] === "oos").reduce((a, g) => a + (Date.parse(g[1]) - Date.parse(g[0])) / 1000, 0);
 
   return (
-    <aside className={`${s.card} ${d.drawer}`} aria-label={`פרטי מכשיר ${name}`} data-testid="device-drawer">
+    <aside ref={asideRef} className={`${s.card} ${d.drawer}`} aria-label={`פרטי מכשיר ${name}`} data-testid="device-drawer">
       <div className={s.cardH}>
         <h2 className={d.title}>{name}</h2>
         <Ownership value={dev.ownership} />
